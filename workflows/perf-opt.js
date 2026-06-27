@@ -143,7 +143,7 @@ await agent(
     schema: { type: 'object', additionalProperties: false, properties: { filesChanged: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['filesChanged', 'summary'] } })
 
 // ---- bounded loop: validate -> cross-review -> (accept|escalate|repair) -----
-let round = 0, accepted = false, lastValidation = null, lastVerdict = null
+let round = 0, accepted = false, lastValidation = null, lastVerdict = null, lastCodexOk = false
 const escalations = []
 while (round < MAX_ROUNDS && !accepted) {
   round++
@@ -176,12 +176,14 @@ while (round < MAX_ROUNDS && !accepted) {
     { label: `arbiter:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: VERDICT_SCHEMA })
   lastVerdict = verdict
 
+  const codexOk = codexF && codexF.failed !== true
+  lastCodexOk = codexOk
   if (verdict.escalate && verdict.escalate.length) escalations.push(...verdict.escalate)
   const route =
     (verdict.escalate && verdict.escalate.length) ? 'escalate'
-    : (verdict.accept === true && v.passed === true && (!verdict.fixes || verdict.fixes.length === 0)) ? 'accept'
+    : (verdict.accept === true && v.passed === true && codexOk && (!verdict.fixes || verdict.fixes.length === 0)) ? 'accept'
     : 'repair'
-  log(`round ${round}: passed=${v.passed}, route=${route}`)
+  log(`round ${round}: passed=${v.passed}, codexLeg=${codexOk ? 'ok' : 'FAILED'}, route=${route}`)
   if (route === 'accept') { accepted = true; break }
   if (route === 'escalate') break
 
@@ -190,6 +192,16 @@ while (round < MAX_ROUNDS && !accepted) {
     `REPAIR lane (round ${round}). Apply ONLY these arbiter fixes in worktree ${C.worktree}: ${JSON.stringify(verdict.fixes)}. Keep the diff minimal; preserve the speedup AND correctness. Return {filesChanged, summary}.`,
     { label: `repair:r${round}`, phase: 'apply', agentType: 'general-purpose',
       schema: { type: 'object', additionalProperties: false, properties: { filesChanged: { type: 'array', items: { type: 'string' } }, summary: { type: 'string' } }, required: ['filesChanged', 'summary'] } })
+}
+
+// cross-model integrity: no successful codex leg -> escalate, never silently pass/fail.
+if (!accepted && escalations.length === 0 && lastValidation && lastValidation.passed === true && !lastCodexOk) {
+  escalations.push({
+    title: 'cross-model review degraded: codex leg unavailable',
+    divergence: `codex leg failed across ${round} round(s); only the Claude leg reviewed; validation is green`,
+    evidence: `${EV}/`,
+    recommendation: 'fix the codex tmux/inject infra and re-run, OR human-approve single-model acceptance',
+  })
 }
 
 // ---- pre-archive guard + archive gate --------------------------------------

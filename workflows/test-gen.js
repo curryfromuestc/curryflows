@@ -82,7 +82,7 @@ const gen = await agent(
   { label: 'generate-tests', phase: 'generate', agentType: 'general-purpose', schema: PRODUCE_SCHEMA })
 
 // ---- bounded loop: validate -> negctrl -> cross-review -> (accept|escalate|repair)
-let round = 0, accepted = false, lastValidation = null, lastNeg = null, lastVerdict = null
+let round = 0, accepted = false, lastValidation = null, lastNeg = null, lastVerdict = null, lastCodexOk = false
 const escalations = []
 while (round < MAX_ROUNDS && !accepted) {
   round++
@@ -125,12 +125,14 @@ while (round < MAX_ROUNDS && !accepted) {
     { label: `arbiter:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: VERDICT_SCHEMA })
   lastVerdict = verdict
 
+  const codexOk = codexF && codexF.failed !== true
+  lastCodexOk = codexOk
   if (verdict.escalate && verdict.escalate.length) escalations.push(...verdict.escalate)
   const route =
     (verdict.escalate && verdict.escalate.length) ? 'escalate'
-    : (verdict.accept === true && v.passed === true && neg.aTestFailed === true && (!verdict.fixes || verdict.fixes.length === 0)) ? 'accept'
+    : (verdict.accept === true && v.passed === true && neg.aTestFailed === true && codexOk && (!verdict.fixes || verdict.fixes.length === 0)) ? 'accept'
     : 'repair'
-  log(`round ${round}: passed=${v.passed}, negctrl=${neg.aTestFailed}, route=${route}`)
+  log(`round ${round}: passed=${v.passed}, negctrl=${neg.aTestFailed}, codexLeg=${codexOk ? 'ok' : 'FAILED'}, route=${route}`)
   if (route === 'accept') { accepted = true; break }
   if (route === 'escalate') break
 
@@ -139,6 +141,16 @@ while (round < MAX_ROUNDS && !accepted) {
     `REPAIR-TESTS lane (round ${round}). Improve the EXISTING tests in worktree ${C.worktree} per the arbiter fixes: ${JSON.stringify(verdict.fixes)}. ` +
     `Do NOT regenerate from scratch; refine. Keep them black-box. Edit only test files. Return {filesChanged, summary}.`,
     { label: `repair-tests:r${round}`, phase: 'generate', agentType: 'general-purpose', schema: PRODUCE_SCHEMA })
+}
+
+// cross-model integrity: no successful codex leg -> escalate, never silently pass/fail.
+if (!accepted && escalations.length === 0 && lastValidation && lastValidation.passed === true && !lastCodexOk) {
+  escalations.push({
+    title: 'cross-model review degraded: codex leg unavailable',
+    divergence: `codex leg failed across ${round} round(s); only the Claude leg reviewed; validation is green`,
+    evidence: `${EV}/`,
+    recommendation: 'fix the codex tmux/inject infra and re-run, OR human-approve single-model acceptance',
+  })
 }
 
 // ---- pre-archive guard + archive gate --------------------------------------
