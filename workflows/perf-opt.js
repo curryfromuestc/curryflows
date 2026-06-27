@@ -8,8 +8,10 @@
 //   -> HARD-STOP(correctness green AND beats baseline) -> apply winner
 //   -> validate -> cross-review(codex||claude->arbiter) -> verdict-laundering
 //   -> bounded loop -> pre-archive guard -> archive gate.
-// Strategy lanes mutate the same code, so they run isolated (isolation:'worktree')
-// and return a patch + metrics; the winner is applied to the thread worktree.
+// Strategy lanes mutate the same code, so each creates its OWN git worktree of
+// the TARGET repo (git -C <thread-worktree> worktree add) -- NOT isolation:'worktree',
+// which targets the session repo -- and returns a patch + metrics; the winner is
+// applied to the thread worktree.
 //
 // args = {
 //   contract: { summary, benchmark_command, target_metric, validation_command (correctness),
@@ -80,6 +82,16 @@ const C = (_A && _A.config) || {}
 const MAX_ROUNDS = C.maxRounds || 3
 const EFFORT = C.codexEffort || 'medium'
 const EV = `${C.worktree}/.curryflows`
+// cross-review panel: one reviewer per lens, per model (distinct lenses beat
+// duplicate reviewers). Counts/lenses are config-overridable.
+const CODEX_LENSES = C.codexLenses || [
+  'correctness-breaking shortcuts & undefined behavior',
+  'benchmark gaming (measuring the wrong thing) & hidden regressions',
+]
+const CLAUDE_LENSES = C.claudeLenses || [
+  'numerical/semantic equivalence to the original behavior',
+  'edge-case & resource regressions introduced by the optimization',
+]
 
 // ---- precheck (fail-closed) ------------------------------------------------
 phase('precheck')
@@ -102,16 +114,20 @@ if (baseline.correctnessPassed !== true) {
 }
 log(`baseline ${K.target_metric}=${baseline.metric}`)
 
-// ---- strategy search: each strategy in its OWN worktree (no clobber) --------
+// ---- strategy search: each strategy in its OWN git worktree of the TARGET repo
+// (NOT isolation:'worktree' -- that creates a worktree of the SESSION repo, not
+// the thread's target project). Lanes run in parallel, each on a fresh worktree.
 phase('search')
 const candidates = (await parallel(K.strategies.map((s, i) => () =>
   agent(
-    `STRATEGY lane ${i} ("${s}"). You are in a fresh isolated worktree of the project. Apply ONLY this optimization strategy to the code: ${s}\n` +
-    `Then run the benchmark \`${K.benchmark_command}\` and the correctness suite \`${K.validation_command}\`. ` +
-    `Boundaries: ${K.boundaries}. ` +
-    `Return {strategy:"${s}", metric (measured ${K.target_metric} number), correctnessPassed (correctness exit==0), patch (\`git diff\` of your change as text), summary}. ` +
+    `STRATEGY lane ${i} ("${s}").\n` +
+    `1. Create a fresh isolated worktree OF THE TARGET REPO at a path that does not yet exist: SW=$(mktemp -u /tmp/cfx_strat_${i}.XXXXXX); git -C ${C.worktree} worktree add --detach "$SW" HEAD\n` +
+    `2. In "$SW", apply ONLY this optimization strategy to the code: ${s}\n` +
+    `3. Run the benchmark \`${K.benchmark_command}\` AND the correctness suite \`${K.validation_command}\` INSIDE "$SW". Boundaries: ${K.boundaries}.\n` +
+    `4. Capture the change as text: git -C "$SW" diff > /tmp/cfx_patch_${i}.diff. Then remove the worktree: git -C ${C.worktree} worktree remove --force "$SW".\n` +
+    `Return {strategy:"${s}", metric (measured ${K.target_metric} number), correctnessPassed (correctness exit==0), patch (the diff text), summary}. ` +
     `If the strategy is infeasible, return metric equal to the baseline and failed:true with an explanation in summary -- do NOT fabricate a speedup.`,
-    { label: `strategy:${i}`, phase: 'search', agentType: 'general-purpose', isolation: 'worktree', schema: CAND_SCHEMA })
+    { label: `strategy:${i}`, phase: 'search', agentType: 'general-purpose', schema: CAND_SCHEMA })
 ))).filter(Boolean)
 
 // ---- HARD-STOP: correctness-vs-speed (the perf-specific pre-apply gate) -----
@@ -156,27 +172,31 @@ while (round < MAX_ROUNDS && !accepted) {
   lastValidation = v
 
   phase('cross-review')
-  const [codexF, claudeF] = await parallel([
-    () => agent(
-      `Cross-model review -- CODEX LEG (round ${round}).\n` +
-      `1. Write a prompt to ${EV}/xreview-codex-prompt-r${round}.md: "Review the optimization in worktree ${C.worktree} (branch ${C.branch}) vs contract ${JSON.stringify(K)}. Inspect git diff. Look for: correctness-breaking shortcuts, benchmark gaming (measuring the wrong thing), undefined behavior, hidden regressions. file:line + reproducer; rank."\n` +
-      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex-prompt-r${round}.md --out ${EV}/xreview-codex-r${round}.md --effort ${EFFORT} --timeout 900\n` +
+  // panel: one codex + one claude reviewer per lens, all read-only and concurrent.
+  const reviews = (await parallel([
+    ...CODEX_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CODEX reviewer #${i} (round ${round}). LENS: ${lens}.\n` +
+      `1. Write a prompt to ${EV}/xreview-codex${i}-prompt-r${round}.md: "Review the optimization in worktree ${C.worktree} (branch ${C.branch}) vs contract ${JSON.stringify(K)}, focusing on: ${lens}. Inspect git diff. file:line + reproducer; rank."\n` +
+      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex${i}-prompt-r${round}.md --out ${EV}/xreview-codex${i}-r${round}.md --effort ${EFFORT} --timeout 900\n` +
       `3. Read the findings file. Return {reviewer:'codex', findings, summary}. On nonzero exit return {reviewer:'codex', failed:true, findings:[], summary:'codex leg failed: <reason>'} -- no fabrication.`,
-      { label: `xreview:codex:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-    () => agent(
-      `Cross-model review -- CLAUDE LEG (round ${round}). Independently review the optimization in worktree ${C.worktree} vs contract ${JSON.stringify(K)}. Read git diff. ` +
-      `Look for correctness shortcuts, benchmark gaming, hidden regressions. file:line + reproducer; rank. No edits. Return {reviewer:'claude', findings, summary}.`,
-      { label: `xreview:claude:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-  ])
+      { label: `xreview:codex${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+    ...CLAUDE_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CLAUDE reviewer #${i} (round ${round}). LENS: ${lens}. Independently review the optimization in worktree ${C.worktree} vs contract ${JSON.stringify(K)}, focusing on: ${lens}. Read git diff. ` +
+      `file:line + reproducer; rank. No edits. Return {reviewer:'claude', findings, summary}.`,
+      { label: `xreview:claude${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+  ])).filter(Boolean)
+  const codexReviews = reviews.filter((r) => r.reviewer === 'codex')
+  const claudeReviews = reviews.filter((r) => r.reviewer === 'claude')
 
   const verdict = await agent(
-    `ARBITER (round ${round}). CODEX: ${JSON.stringify(codexF)}\nCLAUDE: ${JSON.stringify(claudeF)}\nVALIDATION: ${JSON.stringify(v)}\n` +
-    `Reconcile against GROUND TRUTH (contract ${JSON.stringify(K)}, the benchmark, and the correctness result), NOT by vote. Both-raise+settled -> fix; one-raise -> settle vs ground truth; unsettlable -> escalate. ` +
+    `ARBITER (round ${round}). ${codexReviews.length} codex + ${claudeReviews.length} claude INDEPENDENT reviews (different lenses):\n` +
+    `CODEX_REVIEWS: ${JSON.stringify(codexReviews)}\nCLAUDE_REVIEWS: ${JSON.stringify(claudeReviews)}\nVALIDATION: ${JSON.stringify(v)}\n` +
+    `Reconcile against GROUND TRUTH (contract ${JSON.stringify(K)}, the benchmark, and the correctness result), NOT by vote. Multi-raise+settled -> fix; one-raise -> settle vs ground truth; unsettlable -> escalate. ` +
     `Return {accept, fixes, escalate}. accept=true ONLY if fixes empty AND escalate empty AND validation passed (correctness green AND still beats baseline).`,
     { label: `arbiter:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: VERDICT_SCHEMA })
   lastVerdict = verdict
 
-  const codexOk = codexF && codexF.failed !== true
+  const codexOk = codexReviews.some((r) => r.failed !== true)
   lastCodexOk = codexOk
   if (verdict.escalate && verdict.escalate.length) escalations.push(...verdict.escalate)
   const route =

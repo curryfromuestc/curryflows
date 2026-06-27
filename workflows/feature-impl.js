@@ -3,8 +3,9 @@
 // Implements a feature on an isolated branch+worktree, fitting an INDEPENDENT
 // black-box test suite (tests are NOT self-generated here -- they come from the
 // test-gen template). Every produced change passes the standard gate stack:
-//   precheck(fail-closed) -> produce{core,docs} -> validate(real run+evidence)
-//   -> cross-review(codex leg || claude leg -> arbiter, ground-truth not vote)
+//   precheck(fail-closed) -> produce{configurable lanes} -> validate(real run)
+//   -> cross-review(panel: N codex + M claude, distinct lenses -> arbiter,
+//      reconciled against ground truth not by vote)
 //   -> verdict-laundering -> bounded loop -> pre-archive guard + minimal-diff
 //   -> archive gate(validation pass + real diff + rollback).
 // The script only ORCHESTRATES; all editing/bash/codex-driving happens inside
@@ -110,6 +111,16 @@ const C = (_A && _A.config) || {}
 const MAX_ROUNDS = C.maxRounds || 3
 const EFFORT = C.codexEffort || 'medium'
 const EV = `${C.worktree}/.curryflows`
+// cross-review panel: one reviewer per lens, per model. Distinct lenses beat
+// duplicate reviewers (diversity catches failure modes redundancy can't).
+const CODEX_LENSES = C.codexLenses || [
+  'correctness vs the contract (bugs, contract deviations)',
+  'edge cases & failure modes (boundary inputs, error paths, resource handling)',
+]
+const CLAUDE_LENSES = C.claudeLenses || [
+  'contract & API conformance (matches the declared interface and acceptance)',
+  'hidden bugs & code quality (subtle logic errors, maintainability traps)',
+]
 
 // ---- precheck (fail-closed) ------------------------------------------------
 phase('precheck')
@@ -121,20 +132,21 @@ if (!C.worktree || !C.branch || !C.skillDir) {
 }
 log(`feature-impl on branch ${C.branch} (worktree ${C.worktree})`)
 
-// ---- produce: parallel core + docs (NO self-written tests; black-box only) -
+// ---- produce: parallel lanes (NO self-written tests; black-box suite is spec) -
+// Lanes are contract-configurable; each lane MUST edit DISJOINT files (they run
+// concurrently in the same worktree). Default: core + docs.
+const PRODUCE_LANES = K.produce_lanes || [
+  { name: 'core', instruction: 'implement the source code change to make the black-box suite pass; edit source code ONLY, do not modify the test suite' },
+  { name: 'docs', instruction: 'update or author documentation for the change; do not modify code or tests' },
+]
 phase('produce')
-const produce = await parallel([
-  () => agent(
-    `CORE implementation lane. Work ONLY in the worktree ${C.worktree}. Implement: ${K.summary}\n` +
-    `Make the INDEPENDENT black-box suite pass: \`${K.validation_command}\`. You did NOT write that suite; treat it as the spec.\n` +
-    `Boundaries (do not exceed): ${K.boundaries}. Edit source code only; do not modify the test suite. mkdir -p ${EV} for any evidence.\n` +
-    `Return {filesChanged, summary}.`,
-    { label: 'produce:core', phase: 'produce', agentType: 'general-purpose', schema: PRODUCE_SCHEMA }),
-  () => agent(
-    `DOCS lane. Work ONLY in the worktree ${C.worktree}. Update/author docs for: ${K.summary}. Boundaries: ${K.boundaries}. ` +
-    `Do not modify code or tests. Return {filesChanged, summary}.`,
-    { label: 'produce:docs', phase: 'produce', agentType: 'general-purpose', schema: PRODUCE_SCHEMA }),
-])
+const produce = await parallel(PRODUCE_LANES.map((lane) => () => agent(
+  `PRODUCE lane "${lane.name}". Work ONLY in the worktree ${C.worktree}. Implement: ${K.summary}\n` +
+  `Lane task: ${lane.instruction}\n` +
+  `The INDEPENDENT black-box suite (you did NOT write it; treat as the spec): \`${K.validation_command}\`.\n` +
+  `Boundaries (do not exceed): ${K.boundaries}. Other produce lanes run concurrently in this same worktree -- stay strictly within your lane's files to avoid conflicts. mkdir -p ${EV} for any evidence.\n` +
+  `Return {filesChanged, summary}.`,
+  { label: `produce:${lane.name}`, phase: 'produce', agentType: 'general-purpose', schema: PRODUCE_SCHEMA })))
 
 // ---- bounded loop: validate -> cross-review -> (accept|escalate|repair) -----
 let round = 0, accepted = false, lastValidation = null, lastVerdict = null, lastCodexOk = false
@@ -151,35 +163,40 @@ while (round < MAX_ROUNDS && !accepted) {
   lastValidation = v
 
   phase('cross-review')
-  const [codexF, claudeF] = await parallel([
-    () => agent(
-      `Cross-model review -- CODEX LEG (round ${round}).\n` +
-      `1. Write a review prompt to ${EV}/xreview-codex-prompt-r${round}.md (mkdir -p ${EV}): "Review the change in worktree ${C.worktree} (branch ${C.branch}) against this contract: ${JSON.stringify(K)}. Inspect \`git -C ${C.worktree} diff\`. Find correctness bugs / contract deviations; file:line + concrete reproducer; rank Critical/Major/Minor."\n` +
-      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex-prompt-r${round}.md --out ${EV}/xreview-codex-r${round}.md --effort ${EFFORT} --timeout 900\n` +
-      `3. The script launches codex in tmux, waits, and returns when the findings file is written. Read ${EV}/xreview-codex-r${round}.md.\n` +
+  // panel: one codex + one claude reviewer per lens, all read-only and concurrent.
+  // Each codex reviewer writes to a lens-indexed findings file so concurrent codex
+  // sessions never clobber each other.
+  const reviews = (await parallel([
+    ...CODEX_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CODEX reviewer #${i} (round ${round}). LENS: ${lens}.\n` +
+      `1. Write a review prompt to ${EV}/xreview-codex${i}-prompt-r${round}.md (mkdir -p ${EV}): "Review the change in worktree ${C.worktree} (branch ${C.branch}) against this contract: ${JSON.stringify(K)}, focusing on: ${lens}. Inspect \`git -C ${C.worktree} diff\`. file:line + concrete reproducer; rank Critical/Major/Minor."\n` +
+      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex${i}-prompt-r${round}.md --out ${EV}/xreview-codex${i}-r${round}.md --effort ${EFFORT} --timeout 900\n` +
+      `3. The script launches codex in tmux, waits, and returns when the findings file is written. Read ${EV}/xreview-codex${i}-r${round}.md.\n` +
       `Return {reviewer:'codex', findings:[...], summary}. If the script exits nonzero, return {reviewer:'codex', failed:true, findings:[], summary:'codex leg failed: <reason>'} -- do NOT fabricate findings.`,
-      { label: `xreview:codex:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-    () => agent(
-      `Cross-model review -- CLAUDE LEG (round ${round}). Independently review the change in worktree ${C.worktree} (branch ${C.branch}) against this contract: ${JSON.stringify(K)}. ` +
-      `Read \`git -C ${C.worktree} diff\`. Find correctness bugs / contract deviations; file:line + concrete reproducer; rank. Do NOT edit. ` +
+      { label: `xreview:codex${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+    ...CLAUDE_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CLAUDE reviewer #${i} (round ${round}). LENS: ${lens}. Independently review the change in worktree ${C.worktree} (branch ${C.branch}) against this contract: ${JSON.stringify(K)}, focusing on: ${lens}. ` +
+      `Read \`git -C ${C.worktree} diff\`. file:line + concrete reproducer; rank. Do NOT edit. ` +
       `Return {reviewer:'claude', findings:[...], summary}.`,
-      { label: `xreview:claude:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-  ])
+      { label: `xreview:claude${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+  ])).filter(Boolean)
+  const codexReviews = reviews.filter((r) => r.reviewer === 'codex')
+  const claudeReviews = reviews.filter((r) => r.reviewer === 'claude')
 
   const verdict = await agent(
-    `ARBITER (round ${round}). Two INDEPENDENT reviews of the same change:\n` +
-    `CODEX: ${JSON.stringify(codexF)}\nCLAUDE: ${JSON.stringify(claudeF)}\nVALIDATION: ${JSON.stringify(v)}\n` +
+    `ARBITER (round ${round}). ${codexReviews.length} codex + ${claudeReviews.length} claude INDEPENDENT reviews of the same change (different lenses):\n` +
+    `CODEX_REVIEWS: ${JSON.stringify(codexReviews)}\nCLAUDE_REVIEWS: ${JSON.stringify(claudeReviews)}\nVALIDATION: ${JSON.stringify(v)}\n` +
     `Reconcile against GROUND TRUTH (the contract ${JSON.stringify(K)} and the validation result), NOT by vote:\n` +
-    `- A finding both raise, contract-settled -> a real fix.\n` +
+    `- A finding multiple reviewers raise, contract-settled -> a real fix.\n` +
     `- A finding only one raises -> settle against ground truth; real -> fix, not-real -> drop.\n` +
     `- A finding that CANNOT be settled against ground truth (genuine divergence / contract gap) -> escalate to the human.\n` +
     `Return {accept, fixes:[{title,file,line,why}], escalate:[{title,divergence,evidence,recommendation}]}. accept=true ONLY if fixes empty AND escalate empty AND validation passed.`,
     { label: `arbiter:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: VERDICT_SCHEMA })
   lastVerdict = verdict
 
-  // cross-model integrity: a failed codex leg means the review degraded to
-  // single-model and must NOT be accepted as cross-reviewed.
-  const codexOk = codexF && codexF.failed !== true
+  // cross-model integrity: at least one codex reviewer must have succeeded, else
+  // the review degraded to single-model and must NOT be accepted as cross-reviewed.
+  const codexOk = codexReviews.some((r) => r.failed !== true)
   lastCodexOk = codexOk
   // verdict laundering: never trust a one-word accept; derive the route.
   if (verdict.escalate && verdict.escalate.length) { escalations.push(...verdict.escalate) }

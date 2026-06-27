@@ -58,6 +58,16 @@ const C = (_A && _A.config) || {}
 const MAX_ROUNDS = C.maxRounds || 3
 const EFFORT = C.codexEffort || 'medium'
 const EV = `${C.worktree}/.curryflows`
+// cross-review panel: one reviewer per lens, per model (distinct lenses beat
+// duplicate reviewers). Counts/lenses are config-overridable.
+const CODEX_LENSES = C.codexLenses || [
+  'black-box-ness & gap closure (no over-fitting to internals; declared gaps actually covered)',
+  'trivially-true / tautological assertions (does each test really constrain behavior?)',
+]
+const CLAUDE_LENSES = C.claudeLenses || [
+  'contract coverage & edge cases within the declared scope',
+  'test robustness (flakiness, hidden coupling, false confidence)',
+]
 
 // ---- precheck (fail-closed) ------------------------------------------------
 phase('precheck')
@@ -94,38 +104,47 @@ while (round < MAX_ROUNDS && !accepted) {
     { label: `validate:r${round}`, phase: 'validate', agentType: 'Explore', schema: VALIDATE_SCHEMA })
   lastValidation = v
 
-  // HARD-STOP: meaningfulness negative control in an isolated worktree.
+  // HARD-STOP: meaningfulness negative control on a THROWAWAY COPY of the thread
+  // worktree (NOT isolation:'worktree' -- that targets the SESSION repo, not the
+  // thread's target project). The copy includes the uncommitted generated tests,
+  // so the thread worktree is never mutated.
   phase('meaningfulness')
   const neg = await agent(
-    `MEANINGFULNESS NEGATIVE CONTROL (round ${round}). You are in a fresh isolated worktree of the project. ` +
-    `Inject ONE plausible fault into the code under test within "${K.gap_scope}" (e.g. flip a comparison, off-by-one, drop a guard). Then run \`${K.test_command}\`. ` +
-    `At least one of the newly generated tests MUST fail -- that proves the suite is not trivially-true. ` +
-    `Return {faultInjected (what you changed), aTestFailed (bool), whichFailed, summary}. Do NOT report aTestFailed=true unless you actually observed a failure.`,
-    { label: `negctrl:r${round}`, phase: 'meaningfulness', agentType: 'general-purpose', isolation: 'worktree', schema: NEGCTRL_SCHEMA })
+    `MEANINGFULNESS NEGATIVE CONTROL (round ${round}).\n` +
+    `1. Make a throwaway copy of the thread worktree (it holds the just-generated, uncommitted tests): NC=$(mktemp -d); cp -a ${C.worktree}/. "$NC"/\n` +
+    `2. In "$NC", inject ONE plausible fault into the code under test within "${K.gap_scope}" (e.g. flip a comparison, off-by-one, drop a guard).\n` +
+    `3. Run the suite IN THE COPY: \`(cd "$NC" && ${K.test_command})\`. At least one newly generated test MUST fail -- that proves the suite is not trivially-true.\n` +
+    `4. Remove the copy: rm -rf "$NC".\n` +
+    `Return {faultInjected (what+where), aTestFailed (bool), whichFailed, summary}. Do NOT report aTestFailed=true unless you actually observed a test failure in the copy. If the code under test cannot be located, report the blocker -- do NOT fabricate a module to manufacture a failure.`,
+    { label: `negctrl:r${round}`, phase: 'meaningfulness', agentType: 'general-purpose', schema: NEGCTRL_SCHEMA })
   lastNeg = neg
 
   phase('cross-review')
-  const [codexF, claudeF] = await parallel([
-    () => agent(
-      `Cross-model review -- CODEX LEG (round ${round}).\n` +
-      `1. Write a prompt to ${EV}/xreview-codex-prompt-r${round}.md: "Review the NEW tests in worktree ${C.worktree} (branch ${C.branch}) vs contract ${JSON.stringify(K)}. Inspect git diff. Check: are they black-box (no over-fitting to internals)? do they close the declared gaps? any trivially-true / tautological assertions? file:line; rank."\n` +
-      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex-prompt-r${round}.md --out ${EV}/xreview-codex-r${round}.md --effort ${EFFORT} --timeout 900\n` +
+  // panel: one codex + one claude reviewer per lens, all read-only and concurrent.
+  const reviews = (await parallel([
+    ...CODEX_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CODEX reviewer #${i} (round ${round}). LENS: ${lens}.\n` +
+      `1. Write a prompt to ${EV}/xreview-codex${i}-prompt-r${round}.md: "Review the NEW tests in worktree ${C.worktree} (branch ${C.branch}) vs contract ${JSON.stringify(K)}, focusing on: ${lens}. Inspect git diff. file:line; rank."\n` +
+      `2. Run: bash ${C.skillDir}/scripts/codex-review.sh --cwd ${C.worktree} --prompt-file ${EV}/xreview-codex${i}-prompt-r${round}.md --out ${EV}/xreview-codex${i}-r${round}.md --effort ${EFFORT} --timeout 900\n` +
       `3. Read the findings file. Return {reviewer:'codex', findings, summary}. On nonzero exit return {reviewer:'codex', failed:true, findings:[], summary:'codex leg failed: <reason>'} -- no fabrication.`,
-      { label: `xreview:codex:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-    () => agent(
-      `Cross-model review -- CLAUDE LEG (round ${round}). Independently review the NEW tests in worktree ${C.worktree} vs contract ${JSON.stringify(K)}. Read git diff. ` +
-      `Check black-box-ness, gap closure, trivially-true assertions, over-fitting. file:line; rank. No edits. Return {reviewer:'claude', findings, summary}.`,
-      { label: `xreview:claude:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA }),
-  ])
+      { label: `xreview:codex${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+    ...CLAUDE_LENSES.map((lens, i) => () => agent(
+      `Cross-model review -- CLAUDE reviewer #${i} (round ${round}). LENS: ${lens}. Independently review the NEW tests in worktree ${C.worktree} vs contract ${JSON.stringify(K)}, focusing on: ${lens}. Read git diff. ` +
+      `file:line; rank. No edits. Return {reviewer:'claude', findings, summary}.`,
+      { label: `xreview:claude${i}:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: FINDINGS_SCHEMA })),
+  ])).filter(Boolean)
+  const codexReviews = reviews.filter((r) => r.reviewer === 'codex')
+  const claudeReviews = reviews.filter((r) => r.reviewer === 'claude')
 
   const verdict = await agent(
-    `ARBITER (round ${round}). CODEX: ${JSON.stringify(codexF)}\nCLAUDE: ${JSON.stringify(claudeF)}\nVALIDATION: ${JSON.stringify(v)}\nNEGATIVE_CONTROL: ${JSON.stringify(neg)}\n` +
-    `Reconcile against GROUND TRUTH (contract ${JSON.stringify(K)}, the validation, and the negative control), NOT by vote. Both-raise+settled -> fix; one-raise -> settle; unsettlable -> escalate. ` +
+    `ARBITER (round ${round}). ${codexReviews.length} codex + ${claudeReviews.length} claude INDEPENDENT reviews (different lenses):\n` +
+    `CODEX_REVIEWS: ${JSON.stringify(codexReviews)}\nCLAUDE_REVIEWS: ${JSON.stringify(claudeReviews)}\nVALIDATION: ${JSON.stringify(v)}\nNEGATIVE_CONTROL: ${JSON.stringify(neg)}\n` +
+    `Reconcile against GROUND TRUTH (contract ${JSON.stringify(K)}, the validation, and the negative control), NOT by vote. Multi-raise+settled -> fix; one-raise -> settle; unsettlable -> escalate. ` +
     `Return {accept, fixes, escalate}. accept=true ONLY if fixes empty AND escalate empty AND validation passed AND the negative control failed a test (aTestFailed==true).`,
     { label: `arbiter:r${round}`, phase: 'cross-review', agentType: 'Explore', schema: VERDICT_SCHEMA })
   lastVerdict = verdict
 
-  const codexOk = codexF && codexF.failed !== true
+  const codexOk = codexReviews.some((r) => r.failed !== true)
   lastCodexOk = codexOk
   if (verdict.escalate && verdict.escalate.length) escalations.push(...verdict.escalate)
   const route =
