@@ -32,17 +32,18 @@ python3 scripts/discover-threads.py --project <项目repo> --board <项目>/.cur
 
 ## 工作流可视化
 
-把任意 workflow JS 静态提取成一张自包含 HTML 图(无运行时依赖、浏览器直接打开):识别 fail-closed
-门 / produce lane / bounded loop / cross-review panel(codex + Claude 多 lens 扇出 ×N)/ codex 腿 /
-HARD-STOP,agentType 配色(GP 改码 / EX 只读),hover 看 prompt 摘要。
+把任意 workflow JS 静态提取成一张自包含 HTML 流程图(SVG,无运行时依赖、浏览器直接打开):有向边 +
+并行分支 + 循环回边,识别 fail-closed 门 / produce lane / cross-review panel(codex + Claude 多 lens
+扇出 ×N)/ codex 腿 / HARD-STOP,agentType 配色(GP 改码 / EX 只读),hover 看 prompt 摘要。
 
 ```sh
-python3 scripts/workflow-viz.py workflows/                 # 三模板各出 .html + index.html → diagrams/
-python3 scripts/workflow-viz.py workflows/feature-impl.js  # 单文件 → 同名 .html
+python3 scripts/workflow-viz.py workflows/                 # 全部 → <cwd>/.curryflows/diagrams/ + index.html
+python3 scripts/workflow-viz.py workflows/feature-impl.js  # 单文件
 python3 scripts/workflow-viz.py <任意workflow.js> -o out.html
 ```
 
-预生成图在 [`diagrams/`](diagrams/)(模板改动后重跑该命令刷新)。
+图是**运行态产物**,默认落在所在项目的 `.curryflows/diagrams/`(已 gitignore)——**不进 skill 源码树、
+不提交**。新增/改 workflow 后重跑该命令刷新即可。
 
 ## 目录
 
@@ -54,8 +55,9 @@ python3 scripts/workflow-viz.py <任意workflow.js> -o out.html
   codex 的 tmux 驱动器,吸收自 codex-goal-overseer)。
 - `workflows/` — Claude Code Workflow 脚本(纯编排):三个独立模板 `feature-impl.js` /
   `perf-opt.js` / `test-gen.js`(门逻辑各自内联,无共享 base-kernel.js 文件)。
-- `diagrams/` — 由 `workflow-viz.py` 生成的三模板 HTML 图(浏览器打开)。
 - `task-contracts/` — 给项目 copy 的任务契约骨架。
+
+(workflow 的 HTML 图由 `workflow-viz.py` 渲染到所在项目的 `.curryflows/diagrams/`,运行态、不进本仓。)
 
 ## 每个项目的运行态(不进本仓)
 
@@ -63,6 +65,7 @@ python3 scripts/workflow-viz.py <任意workflow.js> -o out.html
 <project>/.curryflows/
   board/threads.jsonl       # 线程板(资源对账的依据)
   board/decisions.jsonl     # 人类决策队列
+  diagrams/                 # workflow-viz.py 渲染的 HTML 流程图
   temp/                     # 监督日志 / 证据
 ```
 worktree 默认落 `~/.cache/curryflows/worktrees/<project>/<thread-id>`(可配)。

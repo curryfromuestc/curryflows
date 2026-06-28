@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
 """
 workflow-viz.py -- render a curryflows Workflow JS template as a self-contained
-human-readable HTML diagram.
+HTML flowchart (SVG nodes + directional edges; no runtime dependency).
 
 It STATICALLY parses the constrained Workflow DSL (export const meta; phase();
-agent(prompt, opts); parallel([...]); pipeline(...); while-loop) -- no JS engine,
-no npm dependency. A small character scanner tracks string / template-literal /
-comment state so brace/paren matching ignores punctuation inside strings.
+agent(prompt, opts); parallel([...]); pipeline(...); while-loop). A character
+scanner tracks string / template-literal / comment state so brace/paren matching
+ignores punctuation inside strings.
 
-What it extracts per template:
-  - meta.name / meta.description / meta.phases
-  - every agent() call: label, phase, agentType (GP/EX), schema, codex-leg flag,
-    a prompt snippet (hover tooltip), and `.map(...)` fan-out count (xN)
-  - parallel([...]) groups  -> agents rendered side by side (concurrent)
-  - the bounded while-loop   -> looped phases wrapped in a "loop xN" container
-  - fail-closed gates (throw ... precheck) and the archive gate / HARD-STOPs
+Rendered flow (top -> bottom, real edges):
+  - fail-closed precheck gate (required contract/config fields, merged & cleaned)
+  - produce lanes  (parallel agents fanned out side by side)
+  - the bounded while-loop, drawn as a container with a back-edge (loop xN)
+      validate -> cross-review panel (codex + Claude, per-lens fan-out) -> arbiter
+  - HARD-STOP / archive gates, commit
+Node colour = agentType (GP general-purpose writes / EX Explore read-only);
+codex-leg and fan-out are badged; the prompt shows on hover.
 
 Usage:
   workflow-viz.py <file.js> [-o out.html]
-  workflow-viz.py <dir/>    [-o outdir/]      # all *.js + an index.html
+  workflow-viz.py <dir/>    [-o outdir/]     # all *.js + index.html
 """
 import sys
 import os
@@ -28,7 +29,7 @@ import argparse
 
 
 # --------------------------------------------------------------------------- #
-# 1. character scanner: mark each char as code (True) or string/comment (False)
+# 1. scanner: mark each char code (True) vs string/comment (False)
 # --------------------------------------------------------------------------- #
 def code_mask(src):
     n = len(src)
@@ -36,13 +37,11 @@ def code_mask(src):
     i = 0
     while i < n:
         c = src[i]
-        # line comment
         if c == '/' and i + 1 < n and src[i + 1] == '/':
             while i < n and src[i] != '\n':
                 mask[i] = False
                 i += 1
             continue
-        # block comment
         if c == '/' and i + 1 < n and src[i + 1] == '*':
             mask[i] = False
             i += 1
@@ -56,26 +55,9 @@ def code_mask(src):
                 mask[i] = False
                 i += 1
             continue
-        # single / double quoted string
-        if c == "'" or c == '"':
-            q = c
-            mask[i] = False
-            i += 1
-            while i < n and src[i] != q:
-                if src[i] == '\\':
-                    mask[i] = False
-                    i += 1
-                    if i < n:
-                        mask[i] = False
-                        i += 1
-                    continue
-                mask[i] = False
-                i += 1
-            if i < n:
-                mask[i] = False
-                i += 1
+        if c in "'\"":
+            i = _skip_string(src, mask, i)
             continue
-        # template literal (backticks) with ${...} interpolation (code inside)
         if c == '`':
             mask[i] = False
             i += 1
@@ -95,7 +77,6 @@ def code_mask(src):
                     while i < n and depth > 0:
                         cc = src[i]
                         if cc in "'\"`":
-                            # skip a nested string inside the interpolation
                             i = _skip_string(src, mask, i)
                             continue
                         if cc == '{':
@@ -103,7 +84,7 @@ def code_mask(src):
                         elif cc == '}':
                             depth -= 1
                             if depth == 0:
-                                mask[i] = False  # closing } of ${...} is not code
+                                mask[i] = False
                                 i += 1
                                 break
                         mask[i] = True
@@ -142,7 +123,6 @@ def _skip_string(src, mask, i):
 
 
 def match_balanced(src, mask, open_idx, open_ch, close_ch):
-    """Given src[open_idx]==open_ch (code), return index of the matching close."""
     n = len(src)
     depth = 0
     i = open_idx
@@ -159,7 +139,6 @@ def match_balanced(src, mask, open_idx, open_ch, close_ch):
 
 
 def top_level_commas(src, mask, start, end):
-    """Indices of commas at depth 0 (ignoring (), [], {}) within (start,end)."""
     out = []
     depth = 0
     for i in range(start, end):
@@ -175,94 +154,79 @@ def top_level_commas(src, mask, start, end):
     return out
 
 
-# --------------------------------------------------------------------------- #
-# 2. extraction
-# --------------------------------------------------------------------------- #
 def find_call_spans(src, mask, name):
-    """All (kw_start, open_paren, close_paren) for `name(` at code positions."""
     spans = []
     for m in re.finditer(r'\b' + re.escape(name) + r'\s*\(', src):
-        kw = m.start()
-        if not mask[kw]:
+        if not mask[m.start()]:
             continue
         op = src.index('(', m.start())
         cp = match_balanced(src, mask, op, '(', ')')
-        spans.append((kw, op, cp))
+        spans.append((m.start(), op, cp))
     return spans
 
 
 def clean_template(text):
     text = text.strip()
-    # turn ${expr} into {expr} for readability
-    text = re.sub(r'\$\{([^}]*)\}', r'{\1}', text)
-    text = text.strip('`\'"')
-    return text
+    text = re.sub(r'\$\{([^{}]*)\}', r'{\1}', text)
+    return text.strip('`\'"').strip()
 
 
-def extract_meta(src):
+# --------------------------------------------------------------------------- #
+# 2. extraction
+# --------------------------------------------------------------------------- #
+def extract_meta(src, mask):
     name = ''
     desc = ''
     phases = []
     m = re.search(r'name\s*:\s*[\'"]([^\'"]+)[\'"]', src)
     if m:
         name = m.group(1)
-    m = re.search(r"description\s*:\s*'([^']+)'", src)
-    if not m:
-        m = re.search(r'description\s*:\s*"([^"]+)"', src)
+    m = re.search(r"description\s*:\s*'([^']+)'", src) or \
+        re.search(r'description\s*:\s*"([^"]+)"', src)
     if m:
         desc = m.group(1)
     pm = re.search(r'phases\s*:\s*\[', src)
     if pm:
         op = src.index('[', pm.start())
-        cp = match_balanced(src, code_mask(src), op, '[', ']')
-        block = src[op:cp]
-        phases = re.findall(r"title\s*:\s*'([^']+)'", block)
+        cp = match_balanced(src, mask, op, '[', ']')
+        phases = re.findall(r"title\s*:\s*'([^']+)'", src[op:cp])
     return {'name': name, 'description': desc, 'phases': phases}
 
 
-def default_array_len(src, mask, ident):
-    """Length of the default array literal of `const ident = ... || [ ... ]`."""
+def default_array_items(src, mask, ident):
+    """Raw element strings of `const ident = ... || [ ... ]` (or None)."""
     m = re.search(r'\b' + re.escape(ident) + r'\s*=', src)
     if not m:
         return None
-    bracket = src.find('[', m.end())
-    if bracket < 0:
+    b = src.find('[', m.end())
+    if b < 0:
         return None
-    # only accept the array if it's close after `||` (a default literal)
-    seg = src[m.end():bracket]
-    if '||' not in seg and ':' not in seg and seg.strip() not in ('', '['):
-        # heuristic: still try, but bail if there is intervening logic
-        pass
-    cp = match_balanced(src, mask, bracket, '[', ']')
-    inner_start = bracket + 1
-    if not src[inner_start:cp].strip():
-        return 0
-    # count non-empty top-level segments (tolerates a trailing comma)
-    commas = top_level_commas(src, mask, inner_start, cp)
-    seg_starts = [inner_start] + [c + 1 for c in commas]
-    seg_ends = [c for c in commas] + [cp]
-    return sum(1 for s, e in zip(seg_starts, seg_ends) if src[s:e].strip())
+    cp = match_balanced(src, mask, b, '[', ']')
+    commas = top_level_commas(src, mask, b + 1, cp)
+    starts = [b + 1] + [c + 1 for c in commas]
+    ends = [c for c in commas] + [cp]
+    items = [src[s:e].strip() for s, e in zip(starts, ends) if src[s:e].strip()]
+    return items
+
+
+def loop_span(src, mask):
+    wm = re.search(r'\bwhile\s*\(', src)
+    if not wm or not mask[wm.start()]:
+        return None
+    cop = src.index('(', wm.start())
+    ccp = match_balanced(src, mask, cop, '(', ')')
+    brace = src.find('{', ccp)
+    if brace < 0:
+        return None
+    return (brace, match_balanced(src, mask, brace, '{', '}'))
 
 
 def extract_agents(src, mask):
+    parallels = [(op, cp) for (_, op, cp) in find_call_spans(src, mask, 'parallel')]
+    pipelines = [(op, cp) for (_, op, cp) in find_call_spans(src, mask, 'pipeline')]
+    groups = parallels + pipelines
     agents = []
-    parallels = find_call_spans(src, mask, 'parallel')
-    pipelines = find_call_spans(src, mask, 'pipeline')
-    groups = [(op, cp, 'parallel') for (_, op, cp) in parallels] + \
-             [(op, cp, 'pipeline') for (_, op, cp) in pipelines]
-
-    # while-loop body span
-    loop_span = None
-    wm = re.search(r'\bwhile\s*\(', src)
-    if wm and mask[wm.start()]:
-        cop = src.index('(', wm.start())
-        ccp = match_balanced(src, mask, cop, '(', ')')
-        brace = src.find('{', ccp)
-        if brace >= 0:
-            bend = match_balanced(src, mask, brace, '{', '}')
-            loop_span = (brace, bend)
-
-    for gid, (kw, op, cp) in enumerate(find_call_spans(src, mask, 'agent')):
+    for kw, op, cp in find_call_spans(src, mask, 'agent'):
         commas = top_level_commas(src, mask, op + 1, cp)
         first = commas[0] if commas else cp
         prompt_expr = src[op + 1:first]
@@ -278,130 +242,205 @@ def extract_agents(src, mask):
         atype = opt(r"agentType\s*:\s*'([^']+)'")
         schema = opt(r'schema\s*:\s*(\w+)')
 
-        # prompt snippet (first readable chunk)
-        snippet = prompt_expr
-        snippet = re.sub(r'`\s*\+\s*\n?\s*`', ' ', snippet)   # join `..` + `..`
-        snippet = clean_template(snippet)
-        snippet = snippet.replace('\\n', ' ')
+        snippet = re.sub(r'`\s*\+\s*`', ' ', prompt_expr)
+        snippet = clean_template(snippet).replace('\\n', ' ')
         snippet = re.sub(r'\s+', ' ', snippet).strip()
-        if len(snippet) > 240:
-            snippet = snippet[:240] + '...'
+        if len(snippet) > 260:
+            snippet = snippet[:260] + '…'
 
-        is_codex_leg = 'codex-review.sh' in prompt_expr
-
-        # fan-out: is this agent the body of an IDENT.map(...) ?
-        pre = src[max(0, kw - 80):kw]
+        pre = src[max(0, kw - 90):kw]
         fan = None
+        fan_ident = None
         mm = re.search(r'(\w+)\.map\s*\(\s*\(?[^)]*\)?\s*=>\s*(?:\(\)\s*=>\s*)?$', pre)
-        if mm:
-            ident = mm.group(1)
-            fan = default_array_len(src, mask, ident) if ident.isidentifier() else None
-            if fan is None:
-                fan = 'N'
+        if mm and mm.group(1).isidentifier():
+            fan_ident = mm.group(1)
+            items = default_array_items(src, mask, fan_ident)
+            fan = len(items) if items else 'N'
 
         group = None
-        for (gop, gcp, kind) in groups:
-            if gop < kw < gcp:
-                if group is None or gop > group[0]:
-                    group = (gop, gcp, kind)
-        looped = bool(loop_span and loop_span[0] < kw < loop_span[1])
+        for (gop, gcp) in groups:
+            if gop < kw < gcp and (group is None or gop > group[0]):
+                group = (gop, gcp)
 
         agents.append({
             'pos': kw, 'label': label or '(agent)', 'phase': phase,
             'atype': atype, 'schema': schema, 'snippet': snippet,
-            'codex': is_codex_leg, 'fanout': fan,
+            'codex': 'codex-review.sh' in prompt_expr,
+            'fan': fan, 'fan_ident': fan_ident,
             'group': (group[0] if group else None),
-            'group_kind': (group[2] if group else None),
-            'looped': looped,
         })
-    return agents, loop_span
+    return agents
 
 
 def extract_gates(src, mask):
-    """Fail-closed throws, archive gate, and HARD-STOP markers (pos, kind, text)."""
     gates = []
+    pm = re.search(r"phase\(\s*'precheck'\s*\)", src)
+    pstart = pend = -1
+    if pm:
+        pstart = pm.start()
+        nxt = re.search(r"phase\(\s*'(?!precheck)\w+'\s*\)", src[pm.end():])
+        pend = pm.end() + nxt.start() if nxt else len(src)
+        fields = []
+        for fm in re.finditer(r'for\s*\(\s*const\s+\w+\s+of\s*\[([^\]]+)\]', src[pstart:pend]):
+            fields += re.findall(r"'([^']+)'", fm.group(1))
+        cm = re.search(r"config requires ([^'\"`]+)", src[pstart:pend])
+        text = ''
+        if fields:
+            text += 'contract: ' + ', '.join(fields)
+        if cm:
+            text += (' · ' if text else '') + 'config: ' + cm.group(1).strip()
+        gates.append({'pos': pstart, 'kind': 'precheck', 'title': 'PRECHECK',
+                      'text': text or 'fail-closed precheck', 'tip': text})
+
     for m in re.finditer(r'throw new Error\(', src):
+        if not mask[m.start()] or (pm and pstart <= m.start() < pend):
+            continue
+        op = src.index('(', m.start())
+        cp = match_balanced(src, mask, op, '(', ')')
+        txt = re.sub(r'\s+', ' ', clean_template(src[op + 1:cp])).strip()
+        txt = re.sub(r'\{\w+\}', '…', txt)
+        gates.append({'pos': m.start(), 'kind': 'gate', 'title': 'GATE',
+                      'text': txt[:130], 'tip': txt})
+
+    for m in re.finditer(r'\bconst\s+archiveOk\s*=', src):
+        if mask[m.start()]:
+            gates.append({'pos': m.start(), 'kind': 'archive', 'title': 'ARCHIVE GATE',
+                          'text': 'accepted · validation green · real diff · rollback · no fabrication',
+                          'tip': 'archive gate (fail-closed)'})
+
+    # HARD-STOP gate: only a real runtime marker `log('HARD-STOP: ...')`,
+    # never a doc/inline comment (those would pollute the flow with header text).
+    for m in re.finditer(r'\blog\s*\(', src):
         if not mask[m.start()]:
             continue
         op = src.index('(', m.start())
         cp = match_balanced(src, mask, op, '(', ')')
-        txt = clean_template(src[op + 1:cp])
-        txt = re.sub(r'\s+', ' ', txt).strip()
-        kind = 'precheck' if ('precheck' in txt or 'fail-closed' in txt) else 'gate'
-        gates.append({'pos': m.start(), 'kind': kind, 'text': txt[:160]})
-    for m in re.finditer(r'\bconst\s+archiveOk\s*=', src):
-        if mask[m.start()]:
-            gates.append({'pos': m.start(), 'kind': 'archive',
-                          'text': 'archive gate (fail-closed): accepted & validation green & real diff & rollback & no fabrication'})
-    for m in re.finditer(r'HARD-STOP', src):
-        # only the code-side markers (comments are fine too -- they flag intent)
-        line_start = src.rfind('\n', 0, m.start()) + 1
-        line_end = src.find('\n', m.start())
-        line = src[line_start:line_end].strip().lstrip('/').strip()
-        gates.append({'pos': m.start(), 'kind': 'hardstop', 'text': line[:160]})
+        inner = src[op + 1:cp]
+        if 'HARD-STOP' not in inner:
+            continue
+        txt = re.sub(r'\s+', ' ', clean_template(inner)).strip()
+        txt = re.sub(r'\{[^}]*\}', '…', txt)
+        gates.append({'pos': m.start(), 'kind': 'hardstop', 'title': 'HARD-STOP',
+                      'text': txt[:130], 'tip': txt})
     return gates
+
+
+def _clean_label(lab):
+    lab = re.sub(r':?r?\{round\}', '', lab)   # drop the per-round suffix :r{round}
+    lab = re.sub(r'\{[^}]*\}', '', lab)        # any leftover template var
+    return lab.strip().strip(':-· ').strip() or '(agent)'
+
+
+def _expand(a, src, mask):
+    """A fanned agent -> N render nodes (names resolved); else a single node."""
+    base = {'kind': 'agent', 'atype': a['atype'], 'codex': a['codex'],
+            'schema': a['schema'], 'tip': a['snippet'], 'hardstop': a.get('hardstop', False)}
+    if a['fan'] in (None, 'N'):
+        nd = dict(base)
+        nd['label'] = _clean_label(a['label'])
+        nd['fan'] = a['fan']
+        return [nd]
+    items = default_array_items(src, mask, a['fan_ident']) or []
+    out = []
+    for k in range(a['fan']):
+        nd = dict(base)
+        lab = a['label'].replace('{i}', str(k))
+        name = None
+        if k < len(items):
+            it = items[k]
+            nm = re.search(r"name\s*:\s*'([^']+)'", it)
+            if nm:
+                name = nm.group(1)
+            elif it[:1] in "'\"`":
+                nd['tip'] = clean_template(it)
+        lab = re.sub(r'\{lane[^}]*\}', name if name else ('#' + str(k)), lab)
+        nd['label'] = _clean_label(lab)
+        nd['fan'] = None
+        out.append(nd)
+    return out
 
 
 def build_model(path):
     with open(path, 'r', encoding='utf-8') as fh:
         src = fh.read()
     mask = code_mask(src)
-    meta = extract_meta(src)
-    agents, loop_span = extract_agents(src, mask)
+    meta = extract_meta(src, mask)
+    agents = extract_agents(src, mask)
     gates = extract_gates(src, mask)
+    lp = loop_span(src, mask)
     max_rounds = 3
     mm = re.search(r'maxRounds\s*\|\|\s*(\d+)', src)
     if mm:
         max_rounds = int(mm.group(1))
-    nodes = [{'t': 'agent', 'pos': a['pos'], 'a': a} for a in agents]
-    nodes += [{'t': 'gate', 'pos': g['pos'], 'g': g} for g in gates]
-    nodes.sort(key=lambda x: x['pos'])
-    return {'meta': meta, 'nodes': nodes, 'loop_span': loop_span,
-            'max_rounds': max_rounds, 'file': os.path.basename(path)}
+
+    def looped(pos):
+        return bool(lp and lp[0] < pos < lp[1])
+
+    merged = [('a', a) for a in agents] + [('g', g) for g in gates]
+    merged.sort(key=lambda x: x[1]['pos'])
+
+    rows = []
+    i = 0
+    while i < len(merged):
+        typ, obj = merged[i]
+        if typ == 'g':
+            rows.append({'kind': 'gate', 'nodes': [obj], 'looped': looped(obj['pos'])})
+            i += 1
+            continue
+        a = obj
+        if a['group'] is not None:
+            grp = a['group']
+            run = [a]
+            j = i + 1
+            while j < len(merged) and merged[j][0] == 'a' and merged[j][1]['group'] == grp:
+                run.append(merged[j][1])
+                j += 1
+            nodes = []
+            for x in run:
+                nodes += _expand(x, src, mask)
+            rows.append({'kind': 'parallel', 'nodes': nodes, 'looped': looped(a['pos'])})
+            i = j
+        else:
+            nodes = _expand(a, src, mask)
+            rows.append({'kind': ('parallel' if len(nodes) > 1 else 'single'),
+                         'nodes': nodes, 'looped': looped(a['pos'])})
+            i += 1
+    return {'meta': meta, 'rows': rows, 'max_rounds': max_rounds,
+            'file': os.path.basename(path)}
 
 
 # --------------------------------------------------------------------------- #
-# 3. HTML rendering (self-contained: inline CSS, no external assets)
+# 3. SVG flowchart rendering (self-contained)
 # --------------------------------------------------------------------------- #
 CSS = """
-:root{--bg:#0f1117;--panel:#171a23;--ink:#e6e9ef;--muted:#9aa3b2;--line:#2a2f3a;
---gp:#f0a23b;--ex:#4ea1f0;--gate:#e5556e;--hard:#ff3b5c;--loop:#7c5cff;--codex:#27c0a0;}
+:root{--bg:#0e1016;--panel:#1b1f2b;--panel2:#161a24;--ink:#e8ebf2;--muted:#98a2b6;
+--line:#3a4252;--gp:#f0a23b;--ex:#54a6f5;--gate:#e5556e;--hard:#ff476a;--arch:#54a6f5;
+--loop:#8a6bff;--codex:#23c8a4;--edge:#5b6577;}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
-.wrap{max-width:980px;margin:0 auto;padding:28px 20px 80px}
-h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:12px;margin:0 0 6px}
-.desc{color:var(--muted);font-size:12.5px;margin:0 0 22px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:8px}
-.flow{position:relative;padding-left:6px}
-.phase{margin:0 0 6px}
-.phase>.pname{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px}
-.row{display:flex;gap:10px;flex-wrap:wrap;margin:6px 0}
-.node{position:relative;background:var(--panel);border:1px solid var(--line);border-left-width:4px;
-border-radius:10px;padding:9px 12px;min-width:200px;flex:1 1 220px;max-width:460px}
-.node .lab{font-weight:600;font-size:13px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.node .meta{color:var(--muted);font-size:11px;margin-top:3px}
-.node.gp{border-left-color:var(--gp)}.node.ex{border-left-color:var(--ex)}
-.tag{font-size:10px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:13px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:26px 18px 70px}
+h1{font-size:19px;margin:0 0 3px}.sub{color:var(--muted);font-size:12px;margin:0 0 12px}
+.desc{color:var(--muted);font-size:12px;margin:0 0 16px;padding:9px 12px;
+background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 14px;font-size:11px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+.card{height:100%;width:100%;background:var(--panel);border:1px solid var(--line);
+border-left:4px solid var(--line);border-radius:9px;padding:7px 10px;overflow:hidden}
+.card.gp{border-left-color:var(--gp)}.card.ex{border-left-color:var(--ex)}
+.card .cl{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;line-height:1.3}
+.card .ct{color:var(--muted);font-size:11px;margin-top:3px;line-height:1.3}
+.tag{font-size:9.5px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .tag.gp{color:var(--gp);border-color:var(--gp)}.tag.ex{color:var(--ex);border-color:var(--ex)}
 .tag.codex{color:var(--codex);border-color:var(--codex)}
 .tag.fan{color:var(--loop);border-color:var(--loop)}
-.par{border:1px dashed var(--line);border-radius:12px;padding:8px 8px 2px;margin:6px 0;position:relative}
-.par::before{content:"parallel · concurrent";position:absolute;top:-9px;left:12px;background:var(--bg);
-padding:0 6px;font-size:10px;color:var(--muted)}
-.gate{display:flex;align-items:center;gap:8px;margin:8px 0;padding:8px 12px;border-radius:8px;
-background:rgba(229,85,110,.08);border:1px solid var(--gate);color:#ffd2da;font-size:12.5px}
-.gate.archive{background:rgba(78,161,240,.08);border-color:var(--ex);color:#cfe6ff}
-.gate.hard{background:rgba(255,59,92,.10);border-color:var(--hard);color:#ffd6dd;font-weight:600}
-.gate .gi{font-weight:700;font-size:11px;letter-spacing:.05em}
-.loop{border:1.5px solid var(--loop);border-radius:14px;padding:6px 12px 10px;margin:10px 0;
-background:rgba(124,92,255,.05);position:relative}
-.loop::before{content:"⟳ bounded loop · ×"attr(data-rounds)" max";position:absolute;top:-10px;left:14px;
-background:var(--bg);padding:0 7px;font-size:11px;color:var(--loop);font-weight:600}
-.arrow{height:14px;width:2px;background:var(--line);margin:0 0 0 24px}
-.legend{display:flex;gap:14px;flex-wrap:wrap;margin:18px 0 4px;font-size:11px;color:var(--muted)}
-.legend span{display:inline-flex;align-items:center;gap:5px}
-.dot{width:10px;height:10px;border-radius:3px;display:inline-block}
-.tip{cursor:help;border-bottom:1px dotted var(--muted)}
-a{color:var(--ex)}
+.tag.hard{color:var(--hard);border-color:var(--hard)}
+.card.gate{background:rgba(229,85,110,.10);border:1px solid var(--gate);border-left-width:4px;border-left-color:var(--gate)}
+.card.precheck{background:rgba(229,85,110,.10);border-color:var(--gate);border-left-color:var(--gate)}
+.card.archive{background:rgba(84,166,245,.10);border-color:var(--arch);border-left-color:var(--arch)}
+.card.hardstop{background:rgba(255,71,106,.13);border-color:var(--hard);border-left-color:var(--hard)}
+.card.gate .cl,.card.precheck .cl{color:#ffd2da}.card.archive .cl{color:#cfe6ff}.card.hardstop .cl{color:#ffd6dd}
 """
 
 
@@ -409,127 +448,166 @@ def esc(s):
     return html.escape(s or '', quote=True)
 
 
-def render_node(a):
-    cls = 'gp' if a['atype'] == 'general-purpose' else ('ex' if a['atype'] == 'Explore' else '')
+def node_html(nd):
+    if nd['kind'] in ('gate', 'precheck', 'archive', 'hardstop'):
+        cls = nd['kind'] if nd['kind'] in ('precheck', 'archive', 'hardstop') else 'gate'
+        return ('<div xmlns="http://www.w3.org/1999/xhtml" class="card %s" title="%s">'
+                '<div class="cl">%s</div><div class="ct">%s</div></div>'
+                ) % (cls, esc(nd['tip']), esc(nd['title']), esc(nd['text']))
+    cls = 'gp' if nd['atype'] == 'general-purpose' else ('ex' if nd['atype'] == 'Explore' else '')
     tags = []
-    if a['atype'] == 'general-purpose':
-        tags.append('<span class="tag gp">GP · writes</span>')
-    elif a['atype'] == 'Explore':
-        tags.append('<span class="tag ex">EX · read-only</span>')
-    if a['codex']:
-        tags.append('<span class="tag codex">codex leg</span>')
-    if a['fanout'] is not None:
-        tags.append('<span class="tag fan">×%s</span>' % esc(str(a['fanout'])))
-    schema = ('<span class="meta">→ %s</span>' % esc(a['schema'])) if a['schema'] else ''
-    return (
-        '<div class="node %s" title="%s">'
-        '<div class="lab">%s %s</div>'
-        '<div class="meta tip">%s</div>%s</div>'
-    ) % (cls, esc(a['snippet']), esc(a['label']), ' '.join(tags),
-         esc(a['snippet'][:120]), schema)
+    if nd['atype'] == 'general-purpose':
+        tags.append('<span class="tag gp">GP</span>')
+    elif nd['atype'] == 'Explore':
+        tags.append('<span class="tag ex">EX</span>')
+    if nd['codex']:
+        tags.append('<span class="tag codex">codex</span>')
+    if nd.get('fan') == 'N':
+        tags.append('<span class="tag fan">×N</span>')
+    if nd.get('hardstop'):
+        tags.append('<span class="tag hard">HARD-STOP</span>')
+    schema = ('<div class="ct">→ %s</div>' % esc(nd['schema'])) if nd['schema'] else ''
+    return ('<div xmlns="http://www.w3.org/1999/xhtml" class="card %s" title="%s">'
+            '<div class="cl">%s %s</div>%s</div>'
+            ) % (cls, esc(nd['tip']), esc(nd['label']), ' '.join(tags), schema)
 
 
 def render(model):
+    rows = model['rows']
     meta = model['meta']
-    parts = []
-    parts.append('<div class="wrap">')
-    parts.append('<h1>curryflows · %s</h1>' % esc(meta['name'] or model['file']))
-    parts.append('<p class="sub">%s</p>' % esc(model['file']))
+    NODE_W, HGAP, MARGIN, RPAD = 200, 16, 28, 64
+    AH, GH, VGAP = 86, 54, 44
+    kmax = max([len(r['nodes']) for r in rows] + [1])
+    CW = max(460, kmax * NODE_W + (kmax - 1) * HGAP)
+    GW = min(560, CW)
+    W = MARGIN + CW + RPAD + MARGIN
+    cx = MARGIN + CW / 2.0
+
+    # lay out rows top -> bottom
+    laid = []
+    y = 20.0
+    for r in rows:
+        n = len(r['nodes'])
+        isgate = r['kind'] == 'gate'
+        if isgate:
+            h = 78 if len(r['nodes'][0].get('text', '')) > 64 else GH
+        else:
+            h = AH
+        boxes = []
+        if isgate or (r['kind'] == 'single' and n == 1):
+            w = GW if isgate else NODE_W
+            boxes.append((cx - w / 2.0, w, r['nodes'][0]))
+        else:
+            total = n * NODE_W + (n - 1) * HGAP
+            sx = cx - total / 2.0
+            for k, nd in enumerate(r['nodes']):
+                boxes.append((sx + k * (NODE_W + HGAP), NODE_W, nd))
+        laid.append({'y': y, 'h': h, 'boxes': boxes, 'looped': r['looped']})
+        y += h + VGAP
+    H = y + 8
+
+    svg = []
+    svg.append('<svg width="%d" height="%d" viewBox="0 0 %d %d" '
+               'xmlns="http://www.w3.org/2000/svg" font-family="inherit">' % (W, int(H), W, int(H)))
+    svg.append('<defs>'
+               '<marker id="ah" markerWidth="9" markerHeight="9" refX="6.5" refY="3" '
+               'orient="auto" markerUnits="userSpaceOnUse">'
+               '<path d="M0,0 L7,3 L0,6 Z" fill="var(--edge)"/></marker>'
+               '<marker id="ahl" markerWidth="10" markerHeight="10" refX="7" refY="3.2" '
+               'orient="auto" markerUnits="userSpaceOnUse">'
+               '<path d="M0,0 L7.5,3.2 L0,6.4 Z" fill="var(--loop)"/></marker></defs>')
+
+    # loop container (behind nodes) + back-edge
+    lidx = [i for i, r in enumerate(laid) if r['looped']]
+    if lidx:
+        f, l = min(lidx), max(lidx)
+        ly0 = laid[f]['y'] - 16
+        ly1 = laid[l]['y'] + laid[l]['h'] + 14
+        svg.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="14" '
+                   'fill="rgba(138,107,255,.06)" stroke="var(--loop)" stroke-width="1.4" '
+                   'stroke-dasharray="6 5"/>' % (MARGIN - 6, ly0, CW + 12, ly1 - ly0))
+        svg.append('<text x="%.1f" y="%.1f" fill="var(--loop)" font-size="11" font-weight="700">'
+                   '⟳ bounded loop ×%d max</text>' % (MARGIN + 4, ly0 + 14, model['max_rounds']))
+        # back-edge in the right gutter: last loop row -> first loop row
+        gx = MARGIN + CW + RPAD * 0.5
+        last = laid[l]
+        first = laid[f]
+        lr = max(x + w for (x, w, _) in last['boxes'])
+        fr = max(x + w for (x, w, _) in first['boxes'])
+        ly = last['y'] + last['h'] / 2.0
+        fy = first['y'] + first['h'] / 2.0
+        svg.append('<path d="M %.1f %.1f L %.1f %.1f L %.1f %.1f L %.1f %.1f" '
+                   'fill="none" stroke="var(--loop)" stroke-width="1.6" stroke-dasharray="5 4" '
+                   'marker-end="url(#ahl)"/>' % (lr + 2, ly, gx, ly, gx, fy, fr + 4, fy))
+
+    # sequential edges
+    def anchor_bottom(row, box):
+        x, w, _ = box
+        return (x + w / 2.0, row['y'] + row['h'])
+
+    def anchor_top(row, box):
+        x, w, _ = box
+        return (x + w / 2.0, row['y'])
+
+    def edge(p1, p2):
+        x1, y1 = p1
+        x2, y2 = p2
+        dy = (y2 - y1) * 0.45
+        svg.append('<path d="M %.1f %.1f C %.1f %.1f %.1f %.1f %.1f %.1f" '
+                   'fill="none" stroke="var(--edge)" stroke-width="1.5" '
+                   'marker-end="url(#ah)"/>' % (x1, y1, x1, y1 + dy, x2, y2 - dy, x2, y2))
+
+    for i in range(len(laid) - 1):
+        A, B = laid[i], laid[i + 1]
+        if len(A['boxes']) == 1:
+            for b in B['boxes']:
+                edge(anchor_bottom(A, A['boxes'][0]), anchor_top(B, b))
+        elif len(B['boxes']) == 1:
+            for a in A['boxes']:
+                edge(anchor_bottom(A, a), anchor_top(B, B['boxes'][0]))
+        else:
+            for a, b in zip(A['boxes'], B['boxes']):
+                edge(anchor_bottom(A, a), anchor_top(B, b))
+
+    # nodes (foreignObject HTML cards on top)
+    for row in laid:
+        for (x, w, nd) in row['boxes']:
+            svg.append('<foreignObject x="%.1f" y="%.1f" width="%.1f" height="%.1f">%s</foreignObject>'
+                       % (x, row['y'], w, row['h'], node_html(nd)))
+    svg.append('</svg>')
+
+    head = []
+    head.append('<div class="wrap">')
+    head.append('<h1>curryflows · %s</h1>' % esc(meta['name'] or model['file']))
+    head.append('<p class="sub">%s</p>' % esc(model['file']))
     if meta['description']:
-        parts.append('<p class="desc">%s</p>' % esc(meta['description']))
-    parts.append(
+        head.append('<p class="desc">%s</p>' % esc(meta['description']))
+    head.append(
         '<div class="legend">'
-        '<span><i class="dot" style="background:var(--gp)"></i>GP general-purpose (改码/commit)</span>'
-        '<span><i class="dot" style="background:var(--ex)"></i>EX Explore (只读评审)</span>'
+        '<span><i class="dot" style="background:var(--gp)"></i>GP general-purpose · 改码/commit</span>'
+        '<span><i class="dot" style="background:var(--ex)"></i>EX Explore · 只读评审</span>'
         '<span><i class="dot" style="background:var(--codex)"></i>codex 腿</span>'
-        '<span><i class="dot" style="background:var(--loop)"></i>×N 扇出 / 循环</span>'
+        '<span><i class="dot" style="background:var(--loop)"></i>循环 / ×N 扇出</span>'
         '<span><i class="dot" style="background:var(--gate)"></i>fail-closed 门</span>'
         '</div>')
-    parts.append('<div class="flow">')
-
-    nodes = model['nodes']
-    loop_span = model['loop_span']
-    in_loop = False
-    cur_phase = None
-    i = 0
-
-    def close_phase():
-        if cur_phase is not None:
-            parts.append('</div>')  # .phase
-
-    while i < len(nodes):
-        nd = nodes[i]
-        pos = nd['pos']
-        # loop container open/close based on source span
-        if loop_span and not in_loop and loop_span[0] < pos < loop_span[1]:
-            close_phase()
-            cur_phase = None
-            parts.append('<div class="loop" data-rounds="%d">' % model['max_rounds'])
-            in_loop = True
-        if loop_span and in_loop and not (loop_span[0] < pos < loop_span[1]):
-            close_phase()
-            cur_phase = None
-            parts.append('</div>')  # .loop
-            in_loop = False
-
-        if nd['t'] == 'gate':
-            close_phase()
-            cur_phase = None
-            g = nd['g']
-            gi = {'precheck': 'PRECHECK', 'archive': 'ARCHIVE GATE',
-                  'hardstop': 'HARD-STOP', 'gate': 'GATE'}.get(g['kind'], 'GATE')
-            cls = {'archive': 'archive', 'hardstop': 'hard'}.get(g['kind'], '')
-            parts.append('<div class="gate %s"><span class="gi">%s</span>%s</div>'
-                         % (cls, gi, esc(g['text'])))
-            i += 1
-            continue
-
-        a = nd['a']
-        ph = a['phase'] or '(unphased)'
-        if ph != cur_phase:
-            close_phase()
-            parts.append('<div class="phase">')
-            parts.append('<div class="pname">%s</div>' % esc(ph))
-            cur_phase = ph
-
-        # collect a run of consecutive agents sharing the same parallel group
-        grp = a['group']
-        if grp is not None:
-            run = [a]
-            j = i + 1
-            while j < len(nodes) and nodes[j]['t'] == 'agent' and nodes[j]['a']['group'] == grp \
-                    and (nodes[j]['a']['phase'] or '(unphased)') == ph:
-                run.append(nodes[j]['a'])
-                j += 1
-            parts.append('<div class="par"><div class="row">')
-            for x in run:
-                parts.append(render_node(x))
-            parts.append('</div></div>')
-            i = j
-        else:
-            parts.append('<div class="row">%s</div>' % render_node(a))
-            i += 1
-
-    close_phase()
-    if in_loop:
-        parts.append('</div>')
-    parts.append('</div>')  # .flow
-    parts.append('</div>')  # .wrap
+    head.append('<div style="overflow:auto">')
+    head.append(''.join(svg))
+    head.append('</div></div>')
 
     return ('<!doctype html><html lang="zh"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>curryflows · %s</title><style>%s</style></head><body>%s</body></html>'
-            ) % (esc(meta['name'] or model['file']), CSS, ''.join(parts))
+            ) % (esc(meta['name'] or model['file']), CSS, ''.join(head))
 
 
 def render_index(items):
     cards = []
     for fn, model in items:
         cards.append(
-            '<a class="node ex" style="display:block;text-decoration:none;margin:8px 0" href="%s">'
-            '<div class="lab">%s</div><div class="meta">%s</div></a>'
+            '<a class="card ex" style="display:block;text-decoration:none;margin:10px 0;color:inherit;height:auto" href="%s">'
+            '<div class="cl">%s</div><div class="ct">%s</div></a>'
             % (esc(fn), esc(model['meta']['name'] or fn),
-               esc((model['meta']['description'] or '')[:160])))
+               esc((model['meta']['description'] or '')[:170])))
     return ('<!doctype html><html lang="zh"><head><meta charset="utf-8">'
             '<title>curryflows workflows</title><style>%s</style></head>'
             '<body><div class="wrap"><h1>curryflows · workflows</h1>'
@@ -537,15 +615,19 @@ def render_index(items):
             ) % (CSS, len(items), ''.join(cards))
 
 
-# --------------------------------------------------------------------------- #
 def main():
-    ap = argparse.ArgumentParser(description='Render a curryflows Workflow JS as HTML.')
+    ap = argparse.ArgumentParser(description='Render a curryflows Workflow JS as an HTML flowchart.')
     ap.add_argument('path', help='a workflow .js file or a directory of them')
-    ap.add_argument('-o', '--out', help='output .html file (single) or dir (directory input)')
+    ap.add_argument('-o', '--out', help='output .html (single) or dir (directory). '
+                    'Default: <cwd>/.curryflows/diagrams/ -- a project runtime dir, '
+                    'NOT the skill source tree.')
     args = ap.parse_args()
+    # diagrams are a runtime artifact: default into the project's .curryflows/,
+    # never into the skill source tree.
+    default_dir = os.path.join(os.getcwd(), '.curryflows', 'diagrams')
 
     if os.path.isdir(args.path):
-        outdir = args.out or os.path.join(args.path, 'diagrams')
+        outdir = args.out or default_dir
         os.makedirs(outdir, exist_ok=True)
         items = []
         for fn in sorted(os.listdir(args.path)):
@@ -558,13 +640,16 @@ def main():
             items.append((out, model))
             print('wrote', os.path.join(outdir, out))
         if items:
-            idx = os.path.join(outdir, 'index.html')
-            with open(idx, 'w', encoding='utf-8') as fh:
+            with open(os.path.join(outdir, 'index.html'), 'w', encoding='utf-8') as fh:
                 fh.write(render_index(items))
-            print('wrote', idx)
+            print('wrote', os.path.join(outdir, 'index.html'))
     else:
         model = build_model(args.path)
-        out = args.out or (os.path.splitext(args.path)[0] + '.html')
+        if args.out:
+            out = args.out
+        else:
+            os.makedirs(default_dir, exist_ok=True)
+            out = os.path.join(default_dir, os.path.splitext(os.path.basename(args.path))[0] + '.html')
         with open(out, 'w', encoding='utf-8') as fh:
             fh.write(render(model))
         print('wrote', out)
