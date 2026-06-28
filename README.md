@@ -30,15 +30,31 @@ python3 scripts/discover-threads.py --project <项目repo> --board <项目>/.cur
 退出码 0 = 干净;2 = 有在途资源(active codex 会话 或 curryflows worktree)未在 board 上注册
 (curryflows 存在的直接动因:绝不漏掉 runaway)。
 
+## 工作流可视化
+
+把任意 workflow JS 静态提取成一张自包含 HTML 图(无运行时依赖、浏览器直接打开):识别 fail-closed
+门 / produce lane / bounded loop / cross-review panel(codex + Claude 多 lens 扇出 ×N)/ codex 腿 /
+HARD-STOP,agentType 配色(GP 改码 / EX 只读),hover 看 prompt 摘要。
+
+```sh
+python3 scripts/workflow-viz.py workflows/                 # 三模板各出 .html + index.html → diagrams/
+python3 scripts/workflow-viz.py workflows/feature-impl.js  # 单文件 → 同名 .html
+python3 scripts/workflow-viz.py <任意workflow.js> -o out.html
+```
+
+预生成图在 [`diagrams/`](diagrams/)(模板改动后重跑该命令刷新)。
+
 ## 目录
 
 - `SKILL.md` — 主文档 + 双 frontmatter。
 - `references/` — 中文设计文档(架构 / 协调器 / 基座与门清单 / 三模板 / codex接入 / 决策面 /
   强目标契约 / goal-cookbook)。
-- `scripts/` — 英文代码,被 agent 调用(`discover-threads.py` 统一发现;`inject-steer.sh` /
-  `interrupt-target.sh` / `locate-codex.sh` codex 的 tmux 驱动器,吸收自 codex-goal-overseer)。
+- `scripts/` — 英文代码,被 agent 调用(`discover-threads.py` 统一发现;`workflow-viz.py` 把
+  workflow JS 渲染成 HTML 图;`inject-steer.sh` / `interrupt-target.sh` / `locate-codex.sh`
+  codex 的 tmux 驱动器,吸收自 codex-goal-overseer)。
 - `workflows/` — Claude Code Workflow 脚本(纯编排):三个独立模板 `feature-impl.js` /
   `perf-opt.js` / `test-gen.js`(门逻辑各自内联,无共享 base-kernel.js 文件)。
+- `diagrams/` — 由 `workflow-viz.py` 生成的三模板 HTML 图(浏览器打开)。
 - `task-contracts/` — 给项目 copy 的任务契约骨架。
 
 ## 每个项目的运行态(不进本仓)
