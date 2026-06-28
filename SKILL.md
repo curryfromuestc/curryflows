@@ -10,7 +10,7 @@ description: >-
   curryflows 跑功能实现/性能优化/构建测试"、"做带跨模型评审的并发开发"、"监督 codex /goal 别跑飞"、
   "排查 runaway codex 会话"、"把人类 review 从关键路径上解耦"。
 user-invocable: true
-argument-hint: '[start | status | feature|perf|test <任务契约路径> | oversee <codex-session-id> <pane>]'
+argument-hint: '[start | status | feature|perf|test <任务契约路径> | oversee <codex-session-id> <pane> | viz]'
 type: skill
 tags: [工作流, 编排, 跨模型评审, 协调器, codex, worktree, 反捏造]
 requires:
@@ -58,6 +58,20 @@ requires:
 → 跨模型 review → verdict 洗白器 → bounded loop(fallback 偏继续 + max-rounds)→ 硬停
 pre-execution gate → pre-archive 反捏造/越界 + minimal-diff → archive(验证过 + 真 diff + rollback)。
 
+## 工作流可视化(硬约定)
+
+**每新增或修改一个 workflow 模板(`workflows/*.js`),必须随之渲染一版 HTML 图,并与模板同一次 commit。**
+改了 js 却没刷新对应图,视为该改动未完成(图与模板必须同步)。
+
+```sh
+python3 scripts/workflow-viz.py workflows/            # 刷新 diagrams/ 下全部 + index.html
+python3 scripts/workflow-viz.py workflows/<name>.js   # 单文件 → 同名 .html
+```
+
+`workflow-viz.py` 纯 Python 无依赖,静态提取 meta / fail-closed 门 / produce lane / bounded loop /
+cross-review panel(codex+Claude 多 lens 扇出 ×N)/ codex 腿 / HARD-STOP,GP(改码)/EX(只读)配色,
+hover 看 prompt 摘要;生成物落 `diagrams/`(自包含 HTML,浏览器直接开)。
+
 ## 并发隔离
 
 每个 thread = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
@@ -84,6 +98,7 @@ base 可配)。并发上限可配(默认保守,大仓调低)。合 main 在 barr
   列所有在途资源 + 未对账的 runaway。
 - `feature|perf|test <任务契约路径>` — 以某模板起一个 thread。
 - `oversee <codex-session-id> <pane>` — 给一个已在跑的 codex /goal 挂监督。
+- `viz [workflow.js|workflows/]` — 跑 `scripts/workflow-viz.py` 把模板渲染成 HTML 图(新增/改模板后必跑)。
 
 ## 文档索引(references)
 
