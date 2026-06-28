@@ -415,9 +415,10 @@ def build_model(path):
 # palettes -- light is an academic-paper look (white ground, warm accents);
 # dark is the original. Tints are derived with color-mix so they track --bg.
 THEMES = {
-    'light': ":root{--bg:#ffffff;--panel:#ffffff;--panel2:#f6f5f0;--ink:#1c1c1c;--muted:#6a6a6a;"
-             "--line:#c7c5bc;--edge:#555555;--gp:#d9822b;--ex:#2f6db0;--gate:#c0392b;"
-             "--hard:#b3271e;--arch:#2f6db0;--loop:#7a5bd0;--codex:#2e8b57;}",
+    # palette from autoDissectPaper (spdark/sphot/spblue/spann + red ramp)
+    'light': ":root{--bg:#ffffff;--panel:#ffffff;--panel2:#f4f5f7;--ink:#374e55;--muted:#74808a;"
+             "--line:#bfc6c9;--edge:#374e55;--gp:#df8f44;--ex:#2c5f8d;--gate:#a4161a;"
+             "--hard:#a53e2a;--arch:#2c5f8d;--loop:#6a6599;--codex:#3f7d63;}",
     'dark': ":root{--bg:#0e1016;--panel:#1b1f2b;--panel2:#161a24;--ink:#e8ebf2;--muted:#98a2b6;"
             "--line:#3a4252;--edge:#5b6577;--gp:#f0a23b;--ex:#54a6f5;--gate:#e5556e;"
             "--hard:#ff476a;--arch:#54a6f5;--loop:#8a6bff;--codex:#23c8a4;}",
