@@ -171,6 +171,15 @@ def clean_template(text):
     return text.strip('`\'"').strip()
 
 
+def _interp_to_placeholder(text):
+    """Render a ${expr} interpolation as a readable <name> placeholder for a
+    tooltip, instead of leaving a broken-looking {expr}."""
+    def repl(m):
+        ids = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', m.group(1))
+        return '<' + (ids[-1] if ids else '…') + '>'
+    return re.sub(r'\$\{([^{}]*)\}', repl, text)
+
+
 # --------------------------------------------------------------------------- #
 # 2. extraction
 # --------------------------------------------------------------------------- #
@@ -242,9 +251,11 @@ def extract_agents(src, mask):
         atype = opt(r"agentType\s*:\s*'([^']+)'")
         schema = opt(r'schema\s*:\s*(\w+)')
 
-        snippet = re.sub(r'`\s*\+\s*`', ' ', prompt_expr)
-        snippet = clean_template(snippet).replace('\\n', ' ')
-        snippet = re.sub(r'\s+', ' ', snippet).strip()
+        snippet = _interp_to_placeholder(prompt_expr)
+        snippet = snippet.replace('\\n', ' ').replace('\\t', ' ').replace("\\'", "'")
+        snippet = re.sub(r'`\s*\+\s*`', ' ', snippet)        # join concatenated templates
+        snippet = snippet.replace('\\`', '`').replace('`', ' ')  # drop backticks
+        snippet = re.sub(r'\s+', ' ', snippet).strip().strip('+').strip()
         if len(snippet) > 260:
             snippet = snippet[:260] + '…'
 
