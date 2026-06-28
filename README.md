@@ -40,6 +40,7 @@ python3 scripts/discover-threads.py --project <项目repo> --board <项目>/.cur
 python3 scripts/workflow-viz.py workflows/                 # 全部 → <cwd>/.curryflows/diagrams/ + index.html
 python3 scripts/workflow-viz.py workflows/feature-impl.js  # 单文件
 python3 scripts/workflow-viz.py <任意workflow.js> -o out.html
+python3 scripts/workflow-viz.py workflows/ --theme dark    # 默认 light(学术风),可切 dark
 ```
 
 图是**运行态产物**,默认落在所在项目的 `.curryflows/diagrams/`(已 gitignore)——**不进 skill 源码树、

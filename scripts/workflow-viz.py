@@ -412,10 +412,18 @@ def build_model(path):
 # --------------------------------------------------------------------------- #
 # 3. SVG flowchart rendering (self-contained)
 # --------------------------------------------------------------------------- #
-CSS = """
-:root{--bg:#0e1016;--panel:#1b1f2b;--panel2:#161a24;--ink:#e8ebf2;--muted:#98a2b6;
---line:#3a4252;--gp:#f0a23b;--ex:#54a6f5;--gate:#e5556e;--hard:#ff476a;--arch:#54a6f5;
---loop:#8a6bff;--codex:#23c8a4;--edge:#5b6577;}
+# palettes -- light is an academic-paper look (white ground, warm accents);
+# dark is the original. Tints are derived with color-mix so they track --bg.
+THEMES = {
+    'light': ":root{--bg:#ffffff;--panel:#ffffff;--panel2:#f6f5f0;--ink:#1c1c1c;--muted:#6a6a6a;"
+             "--line:#c7c5bc;--edge:#555555;--gp:#d9822b;--ex:#2f6db0;--gate:#c0392b;"
+             "--hard:#b3271e;--arch:#2f6db0;--loop:#7a5bd0;--codex:#2e8b57;}",
+    'dark': ":root{--bg:#0e1016;--panel:#1b1f2b;--panel2:#161a24;--ink:#e8ebf2;--muted:#98a2b6;"
+            "--line:#3a4252;--edge:#5b6577;--gp:#f0a23b;--ex:#54a6f5;--gate:#e5556e;"
+            "--hard:#ff476a;--arch:#54a6f5;--loop:#8a6bff;--codex:#23c8a4;}",
+}
+
+CSS_BASE = """
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
 font:13px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif}
@@ -426,21 +434,21 @@ background:var(--panel2);border:1px solid var(--line);border-radius:8px}
 .legend{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 14px;font-size:11px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:5px}
 .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+.loopbox{fill:color-mix(in srgb,var(--loop) 6%,var(--bg));stroke:var(--loop)}
 .card{height:100%;width:100%;background:var(--panel);border:1px solid var(--line);
 border-left:4px solid var(--line);border-radius:9px;padding:7px 10px;overflow:hidden}
 .card.gp{border-left-color:var(--gp)}.card.ex{border-left-color:var(--ex)}
-.card .cl{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;line-height:1.3}
+.card .cl{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;line-height:1.3;color:var(--ink)}
 .card .ct{color:var(--muted);font-size:11px;margin-top:3px;line-height:1.3}
 .tag{font-size:9.5px;padding:1px 6px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
 .tag.gp{color:var(--gp);border-color:var(--gp)}.tag.ex{color:var(--ex);border-color:var(--ex)}
 .tag.codex{color:var(--codex);border-color:var(--codex)}
 .tag.fan{color:var(--loop);border-color:var(--loop)}
 .tag.hard{color:var(--hard);border-color:var(--hard)}
-.card.gate{background:rgba(229,85,110,.10);border:1px solid var(--gate);border-left-width:4px;border-left-color:var(--gate)}
-.card.precheck{background:rgba(229,85,110,.10);border-color:var(--gate);border-left-color:var(--gate)}
-.card.archive{background:rgba(84,166,245,.10);border-color:var(--arch);border-left-color:var(--arch)}
-.card.hardstop{background:rgba(255,71,106,.13);border-color:var(--hard);border-left-color:var(--hard)}
-.card.gate .cl,.card.precheck .cl{color:#ffd2da}.card.archive .cl{color:#cfe6ff}.card.hardstop .cl{color:#ffd6dd}
+.card.gate,.card.precheck{background:color-mix(in srgb,var(--gate) 9%,var(--bg));border:1px solid var(--gate);border-left-width:4px;border-left-color:var(--gate)}
+.card.archive{background:color-mix(in srgb,var(--arch) 9%,var(--bg));border:1px solid var(--arch);border-left-width:4px;border-left-color:var(--arch)}
+.card.hardstop{background:color-mix(in srgb,var(--hard) 12%,var(--bg));border:1px solid var(--hard);border-left-width:4px;border-left-color:var(--hard)}
+.card.gate .cl,.card.precheck .cl{color:var(--gate)}.card.archive .cl{color:var(--arch)}.card.hardstop .cl{color:var(--hard)}
 """
 
 
@@ -472,7 +480,7 @@ def node_html(nd):
             ) % (cls, esc(nd['tip']), esc(nd['label']), ' '.join(tags), schema)
 
 
-def render(model):
+def render(model, theme='light'):
     rows = model['rows']
     meta = model['meta']
     NODE_W, HGAP, MARGIN, RPAD = 200, 16, 28, 64
@@ -523,9 +531,8 @@ def render(model):
         f, l = min(lidx), max(lidx)
         ly0 = laid[f]['y'] - 16
         ly1 = laid[l]['y'] + laid[l]['h'] + 14
-        svg.append('<rect x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="14" '
-                   'fill="rgba(138,107,255,.06)" stroke="var(--loop)" stroke-width="1.4" '
-                   'stroke-dasharray="6 5"/>' % (MARGIN - 6, ly0, CW + 12, ly1 - ly0))
+        svg.append('<rect class="loopbox" x="%.1f" y="%.1f" width="%.1f" height="%.1f" rx="14" '
+                   'stroke-width="1.4" stroke-dasharray="6 5"/>' % (MARGIN - 6, ly0, CW + 12, ly1 - ly0))
         svg.append('<text x="%.1f" y="%.1f" fill="var(--loop)" font-size="11" font-weight="700">'
                    '⟳ bounded loop ×%d max</text>' % (MARGIN + 4, ly0 + 14, model['max_rounds']))
         # back-edge in the right gutter: last loop row -> first loop row
@@ -594,13 +601,15 @@ def render(model):
     head.append(''.join(svg))
     head.append('</div></div>')
 
+    css = THEMES.get(theme, THEMES['light']) + CSS_BASE
     return ('<!doctype html><html lang="zh"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>curryflows · %s</title><style>%s</style></head><body>%s</body></html>'
-            ) % (esc(meta['name'] or model['file']), CSS, ''.join(head))
+            ) % (esc(meta['name'] or model['file']), css, ''.join(head))
 
 
-def render_index(items):
+def render_index(items, theme='light'):
+    css = THEMES.get(theme, THEMES['light']) + CSS_BASE
     cards = []
     for fn, model in items:
         cards.append(
@@ -612,7 +621,7 @@ def render_index(items):
             '<title>curryflows workflows</title><style>%s</style></head>'
             '<body><div class="wrap"><h1>curryflows · workflows</h1>'
             '<p class="sub">%d 个模板</p>%s</div></body></html>'
-            ) % (CSS, len(items), ''.join(cards))
+            ) % (css, len(items), ''.join(cards))
 
 
 def main():
@@ -621,6 +630,8 @@ def main():
     ap.add_argument('-o', '--out', help='output .html (single) or dir (directory). '
                     'Default: <cwd>/.curryflows/diagrams/ -- a project runtime dir, '
                     'NOT the skill source tree.')
+    ap.add_argument('--theme', choices=['light', 'dark'], default='light',
+                    help='colour theme (default: light, academic-paper look)')
     args = ap.parse_args()
     # diagrams are a runtime artifact: default into the project's .curryflows/,
     # never into the skill source tree.
@@ -636,12 +647,12 @@ def main():
             model = build_model(os.path.join(args.path, fn))
             out = os.path.splitext(fn)[0] + '.html'
             with open(os.path.join(outdir, out), 'w', encoding='utf-8') as fh:
-                fh.write(render(model))
+                fh.write(render(model, args.theme))
             items.append((out, model))
             print('wrote', os.path.join(outdir, out))
         if items:
             with open(os.path.join(outdir, 'index.html'), 'w', encoding='utf-8') as fh:
-                fh.write(render_index(items))
+                fh.write(render_index(items, args.theme))
             print('wrote', os.path.join(outdir, 'index.html'))
     else:
         model = build_model(args.path)
@@ -651,7 +662,7 @@ def main():
             os.makedirs(default_dir, exist_ok=True)
             out = os.path.join(default_dir, os.path.splitext(os.path.basename(args.path))[0] + '.html')
         with open(out, 'w', encoding='utf-8') as fh:
-            fh.write(render(model))
+            fh.write(render(model, args.theme))
         print('wrote', out)
 
 

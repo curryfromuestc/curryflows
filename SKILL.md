@@ -68,6 +68,7 @@ pre-execution gate → pre-archive 反捏造/越界 + minimal-diff → archive(�
 python3 scripts/workflow-viz.py workflows/            # 全部 → <cwd>/.curryflows/diagrams/ + index.html
 python3 scripts/workflow-viz.py workflows/<name>.js   # 单文件 → <cwd>/.curryflows/diagrams/<name>.html
 python3 scripts/workflow-viz.py <file.js> -o <out.html>   # 显式输出路径
+python3 scripts/workflow-viz.py workflows/ --theme dark    # 深色(默认 light 学术风)
 ```
 
 `workflow-viz.py` 纯 Python 无依赖,静态提取 meta / fail-closed 门 / produce lane / bounded loop /
