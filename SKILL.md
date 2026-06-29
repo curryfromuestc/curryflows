@@ -1,18 +1,20 @@
 ---
 name: curryflows
 description: >-
-  通用工作流协调器 skill,把人类 review 从构建关键路径上解耦。一个 /loop 协调器并发推进多个有界
-  Workflow kernel(功能实现 / 性能优化 / 构建测试 三个内置模板),每个产物经 codex + Claude
-  跨模型 review + 反捏造门,在独立分支 + worktree 上 speculative 推进;只在合 main、对外不可逆、
-  跨模型分歧三种情况升人类决策,其余靠"疑问→就地跨模型 review→分歧才升"自动消化。自驱的 codex
-  /goal 线程挂只读审计 + Esc 急停 + 强目标契约(budget + blocked-stop),防跑飞。统一资源发现把
-  所有在途 codex 会话 + worktree 对账,杜绝 runaway。触发于:"起 curryflows 协调器"、"用
-  curryflows 跑功能实现/性能优化/构建测试"、"做带跨模型评审的并发开发"、"监督 codex /goal 别跑飞"、
-  "排查 runaway codex 会话"、"把人类 review 从关键路径上解耦"。
+  通用工作流协调器 skill,把人类 review 从构建关键路径上解耦。一个 /loop 协调器以"审核优先"
+  推进多个在 tmux 里长跑的 codex /goal worker:每个 tick 先并发派多个强力(opus)reviewer
+  subagent 审产物 + 对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux
+  (起/驭/回收 codex)。worker 是 codex、reviewer 是 Claude,天然跨模型;裁决只回一条清晰摘要
+  给主 session,完整证据落 durable 看板,人类异步看、异步决策,默认不阻断推进——只在合 main、
+  对外不可逆、跨模型真分歧三种 barrier 才升人类。自驱 codex /goal 挂强目标契约(budget +
+  blocked-stop)+ 只读审计 + Esc 急停,防跑飞。统一资源发现把所有在途 codex 会话 + worktree
+  对账,用完即回收,杜绝 runaway。触发于:"起 curryflows 协调器"、"用 curryflows 跑并发开发"、
+  "做带跨模型评审的并发开发"、"监督 codex /goal 别跑飞"、"排查 runaway codex 会话"、
+  "把人类 review 从关键路径上解耦"。
 user-invocable: true
-argument-hint: '[start | status | feature|perf|test <任务契约路径> | oversee <codex-session-id> <pane> | viz]'
+argument-hint: '[start | status | board | oversee <codex-session-id> <pane>]'
 type: skill
-tags: [工作流, 编排, 跨模型评审, 协调器, codex, worktree, 反捏造]
+tags: [工作流, 编排, 跨模型评审, 协调器, codex, tmux, worktree, 反捏造]
 requires:
   - codex CLI (>=0.128, 支持 /goal)
   - tmux
@@ -22,99 +24,132 @@ requires:
 
 # curryflows
 
-把人类 review 从构建关键路径上解耦的通用工作流协调器。一个协调器 agent 在 review 待定时继续推进
-相互独立的工作,只在少数"必须确认"点阻塞;解耦期的正确性由自动化门 + 跨模型 review 守住,人类只
-处理真正的决策,且看的是蒸馏后的决策面而非千行原文。
+把人类 review 从构建关键路径上解耦的通用工作流协调器。一个 `/loop` 协调器并发推进多个长跑
+worker;解耦期的正确性由跨模型 review(worker=codex,reviewer=Claude)+ 反捏造审核守住。
+**每个 tick 都吐出一条清晰摘要回主 session,人类有空才看、才决策,而决策默认不阻断推进——只有
+合 main、对外不可逆、跨模型真分歧三种 barrier 才停。**
 
-> 本 skill 是通用件,不写死任何具体项目的路径或契约。每个项目的运行态(board / 决策队列 /
+> 本 skill 是通用件,不写死任何具体项目的路径或契约。每个项目的运行态(看板 / 决策队列 /
 > worktree / 日志)落在目标项目里,不进 skill 仓。
+
+## 唯一的硬约束:不爆主 session 上下文
+
+curryflows 不为省钱做取舍。唯一的设计约束是:**协调器(主 session)的上下文绝不能被巨型
+transcript / diff / 裁决全文撑爆**。一切重活——读几百 MB 的 codex transcript、读 git diff、
+跑脚本、操作 tmux——都发生在被 spawn 的 subagent 里,它们的大上下文随 subagent 消亡;协调器
+只收回蒸馏后的结论。协调器会 park、会被压缩、会跨多个唤醒周期存活,所以它的真相源是 durable
+看板文件,不是上下文(见 `references/board.md`)。
 
 ## 三层控制流
 
-1. **协调器(`/loop` 动态模式)= 外层调度**:维护在途线程图,推进就绪线程,无就绪时 park 释放
-   上下文,被事件(线程完成、人类回复、定时)唤醒。这一层是 agent 推理,**不是** workflow。
-2. **Workflow kernel = 内层有界任务**:确定性扇出(三个模板),结构化输出、可 resume、带 budget。
-   Workflow 脚本**只编排**,所有动手(tmux/bash/编辑)在它 spawn 的 agent 内部。
-3. **codex `/goal` = 自驱线程**:长程不确定调查,由强目标契约(budget + blocked-stop)+ 只读
-   审计 + Esc 急停兜住。
+1. **协调器(`/loop` 动态模式)= 外层调度**:极薄,只做推理、决策、派发、写看板,自己不读大
+   文件、不跑脚本。维护在途线程图,无就绪事项时 park 释放上下文,被事件(线程完成、人类回复、
+   定时)唤醒。这一层是 agent 推理,**不是**确定性编排脚本。
+2. **subagent 派发 = 内层有界动作**:每个 tick 先并发派多个 **reviewer subagent**(opus,只读)
+   审产物 + 对账资源;协调器据裁决决策后,再派一个 **operator subagent**(opus,可改)去操作
+   tmux/codex(起/驭/回收)。所有 subagent 一律强力(opus)。
+3. **codex `/goal` = 自驱 worker**:真正干活的长跑线程,在 detached tmux 里跑,由强目标契约
+   (budget + blocked-stop)+ 只读审计 + Esc 急停兜住(见 `references/goal-contract.md`)。
+
+为什么外层不能是确定性编排:在途线程数量与依赖随事件动态变化、需要在 review 待定时择机推进别的
+就绪线程、需要 park 后被任意事件唤醒——这是开放式 agent 推理,只能用 `/loop` 动态模式表达。
+
+## tick:审核优先 → 决策 → 操作
+
+每个 tick 严格按此顺序(完整 runbook 见 `references/coordinator.md`):
+
+1. **审核(先派 N 个 reviewer subagent,并发,跨模型,各自隔离上下文)**:它们顺手读资源真值
+   (`scripts/discover-threads.py` + 看板)、读在途 codex worker 的 transcript/diff,审产物,
+   各回一条**清晰、不糊弄**的裁决(含异议)。巨型 transcript 隔离在 subagent 内,绝不进协调器。
+2. **决策(协调器,薄)**:收齐裁决 → 收敛;多裁决一致且依据可判就自动处理,真分歧裁不动 →
+   升人类决策项(不投票)。同时落地人类已回复的决策项。
+3. **操作(后派 1 个 operator subagent)**:按决策操作 tmux/codex——detach 起新 /goal、
+   `inject-steer.sh` 注入指令、`interrupt-target.sh` 软停,以及**回收用完的资源**(`tmux
+   kill-session` + `git worktree remove/prune` + 删 curryflows 分支,见 `scripts/reap.sh`)。
+4. **写看板 + 回摘要**:更新 durable 看板,向主 session 回一条清晰摘要(schema 见下)。
+5. **park 或 continue**:有就绪事项就继续;否则 arm Monitor + ScheduleWakeup(1200–1800s)后停下省上下文。
+
+## 每 tick 的摘要:清晰、不糊弄
+
+回主 session 的摘要必须紧凑,但**禁止绿洗**。缺以下任一项不算合格摘要:
+
+- 每条在跑线程:状态 / 本 tick 实质进展 / 预算余额;
+- 审核裁决:**含异议**(哪个 reviewer 报了什么、是否有跨模型分歧),不许只报"通过";
+- **未验证项 / 风险 / 越界**:强制如实暴露;
+- 待人类决策项(若有)+ 本 tick 回收了哪些资源。
+
+完整裁决 / transcript 落 durable 看板,摘要只给指针(路径)。详见 `references/board.md`。
 
 ## 跨模型 review(本 skill 的招牌)
 
-每个高风险产物由 codex 与 Claude **各自独立** review,分歧即信号:两方一致且契约可判 → 自动处理;
-仅一方报 → 对照 ground truth(契约 / 权威文档 / GOLD oracle)判,**不投票**;裁不动的真分歧 →
-升人类决策项。这天然把人类决策队列过滤到极少数。
+worker 是 codex、reviewer 是 Claude opus,produce 与 review 天然跨模型;每 tick 派**多个**
+reviewer(不同 lens,各自独立),分歧即信号:一致且依据可判 → 自动处理;真分歧 → 对照 ground
+truth(契约 / 权威文档 / GOLD oracle / 复现)裁,**不投票**;裁不动 → 升人类。需要 codex 第二
+意见时,reviewer 可调 `scripts/codex-review.sh` 拉一份 codex 侧审核(可选,非每 tick 必跑)。
+reviewer 的反捏造 / 独立复验职责见 `references/reviewer-spec.md`。
 
-## 三个内置模板(共享同一套门,各自内联实现)
+## 综合看板(HTML,启动即 serve)
 
-| 模板 | produce 中段 | 验证面 |
-|---|---|---|
-| 功能实现 | `parallel{core, docs}` | **独立黑盒测试套件** |
-| 性能优化 | `parallel{策略 lanes}` + 正确性-vs-速度硬停 | benchmark + 正确性套件 |
-| 构建测试 | inspect 覆盖率缺口 → 一次性生成 → repair | 测试套件 + 覆盖率 |
+每个项目的运行态落在 `<project>/.curryflows/board/`:`threads.jsonl`(线程台账)、
+`decisions.jsonl`(人类决策队列)、`ticks.jsonl`(每 tick 完整裁决,durable 历史)。
+`scripts/render-board.py` 从这些 jsonl 确定性渲染出一张自包含 **HTML 看板**(`dashboard.html`,
+浅色学术配色,浏览器直接开)。
 
-修 bug = 构建测试(加 RED 复现用例,reproduce-first 强制)→ 功能实现(拟合到绿),minimal-diff 收紧。
+`start` 协调器时**顺带后台拉起 `scripts/serve-board.py`**:它在本地端口(默认
+`127.0.0.1:8787`)serve 看板,**每次请求实时重渲染** + 页面自带自动刷新,人类浏览器里就能看实时
+状态(SSH 机器上端口转发即可)。格式见 `references/board.md`。
 
-共享门(全部标准,三个文件各自内联实现,无单独 base-kernel.js):契约 fail-closed precheck → produce →(parallel→guarding join)→ 验证真跑+证据
-→ 跨模型 review → verdict 洗白器 → bounded loop(fallback 偏继续 + max-rounds)→ 硬停
-pre-execution gate → pre-archive 反捏造/越界 + minimal-diff → archive(验证过 + 真 diff + rollback)。
+## 资源管理:用完即回收
 
-## 工作流可视化(硬约定)
-
-**每新增或修改一个 workflow(`workflows/*.js`),都渲染一版 HTML 流程图来核对。**
-图是**运行态产物**,落在**所在项目的 `.curryflows/diagrams/`**(已 gitignore)——
-**不进 skill 源码树、不提交**(skill 仓只放源码与文档)。
-
-```sh
-python3 scripts/workflow-viz.py workflows/            # 全部 → <cwd>/.curryflows/diagrams/ + index.html
-python3 scripts/workflow-viz.py workflows/<name>.js   # 单文件 → <cwd>/.curryflows/diagrams/<name>.html
-python3 scripts/workflow-viz.py <file.js> -o <out.html>   # 显式输出路径
-python3 scripts/workflow-viz.py workflows/ --theme dark    # 深色(默认 light 学术风)
-```
-
-`workflow-viz.py` 纯 Python 无依赖,静态提取 meta / fail-closed 门 / produce lane / bounded loop /
-cross-review panel(codex+Claude 多 lens 扇出 ×N)/ codex 腿 / HARD-STOP,GP(改码)/EX(只读)配色,
-有向边 + 并行分支 + 循环回边,hover 看 prompt 摘要;输出自包含 HTML(SVG),浏览器直接开。
+operator 每 tick 负责把跑完 / 孤儿的 tmux 会话、codex 线程、worktree **直接回收**——这是硬职责,
+不指望收尾钩子。`discover-threads.py` 双向对账(真实 tmux 会话 / worktree vs 看板)给出可回收集,
+operator 执行 `scripts/reap.sh`。详见 `references/operator-spec.md`。
 
 ## 并发隔离
 
-每个 thread = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
-base 可配)。并发上限可配(默认保守,大仓调低)。合 main 在 barrier 处串行:先 rebase 到最新 main、
-重跑验证,冲突 settle 不了升决策项。孤儿 worktree 并入资源发现对账 + `git worktree prune`。
+每个长跑 worker = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
+base 可配)。worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。合 main 在 barrier
+处串行:先 rebase 到最新 main、重跑验证,冲突 settle 不了升决策项。孤儿 worktree 并入资源发现对账
++ 回收。
 
-## 人类决策(barrier)
+## 人类决策(barrier,异步、非阻断)
 
-硬闸只剩两类:**合 main**、**对外不可逆**。其余靠"疑问→就地跨模型 review→分歧 settle 不了才升
-决策项"。seal-contract 放在开头(plan-tree 交叉评审 + 人封)。
+默认不阻塞:疑问 → 就地跨模型 review → 一致且依据可判就自动处理。只有三类硬闸入队:**合 main**、
+**对外不可逆**、**跨模型真分歧**(另有 **seal-contract** 在开头封定 worker 的目标契约)。人类在
+`dashboard.html` / `decisions.jsonl` 上异步处理,**前进不等人**。详见 `references/decision-surface.md`。
 
-## 自驱 codex 的监督(吸收自 codex-goal-overseer)
+## 自驱 codex 的监督
 
-协调器取代了原来独立的 overseer 会话:每个 tick 自己跑廉价信号(`discover-threads.py` + budget),
-对深度审计 spawn 一个**只读 opus subagent** 读 transcript/diff(隔离巨型 transcript,绝不进协调器
-上下文),拿回裁决;坏裁决 → 协调器跑 `interrupt-target.sh` 软停 + post 决策项。codex 全走 tmux,
-唯一驱动器是 `inject-steer.sh` / `interrupt-target.sh`,绝不手搓 send-keys;有界 review 用单 prompt
-+ 文件交付(不挂 overseer),自驱才种 /goal(挂监督)。
+协调器取代了独立的 overseer 会话:廉价信号(`discover-threads.py` + budget)在审核阶段由 reviewer
+顺手出;深度审计由只读 opus reviewer 读 transcript/diff(隔离巨型 transcript,绝不进协调器);坏裁决
+→ 协调器决策 → operator 跑 `interrupt-target.sh` 软停 + post 决策项。codex 全走 tmux,唯一驱动器是
+`inject-steer.sh` / `interrupt-target.sh`,绝不手搓 send-keys。对目标 codex 的写只有两类:Escape
+(软停)和人类裁决后注入的指令,其余全只读。
 
 ## 操作
 
-- `start` — 在当前项目起协调器 `/loop`(见 `references/coordinator.md`)。
-- `status` — 跑 `scripts/discover-threads.py --project . --board <project>/.curryflows/board/threads.jsonl`,
+- `start` — 在当前项目起协调器 `/loop`(见 `references/coordinator.md`),并后台拉起
+  `scripts/serve-board.py` serve HTML 看板(默认 `127.0.0.1:8787`)。
+- `status` — 跑 `scripts/discover-threads.py --project . --board ./.curryflows/board/threads.jsonl`,
   列所有在途资源 + 未对账的 runaway。
-- `feature|perf|test <任务契约路径>` — 以某模板起一个 thread。
-- `oversee <codex-session-id> <pane>` — 给一个已在跑的 codex /goal 挂监督。
-- `viz [workflow.js|workflows/]` — 跑 `scripts/workflow-viz.py` 把模板渲染成 HTML 图(新增/改模板后必跑)。
+- `board` — 跑 `scripts/render-board.py --board ./.curryflows/board` 把 jsonl 渲染成 `dashboard.html`
+  (或直接开已 serve 的端口看实时版)。
+- `oversee <codex-session-id> <pane>` — 把一个已在跑的 codex /goal(在 curryflows 之外启动的)
+  注册到看板,纳入协调器每-tick 的 reviewer 审核 + Esc 急停;不是独立 overseer 会话。
 
 ## 文档索引(references)
 
-- `architecture.md` — 三层模型、跨模型 review、barrier 模型、Workflow↔agent 边界。
+- `architecture.md` — 三层模型、审核优先 tick、跨模型 review、barrier、subagent 边界。
 - `coordinator.md` — coordinator tick runbook + `/loop` prompt。
-- `base-kernel-gates.md` — 共享 kernel 与全部门。
-- `template-feature.md` / `template-perf.md` / `template-test.md`。
-- `codex-integration.md` — tmux 两模式 + inject/interrupt + 文件交付。
+- `reviewer-spec.md` — reviewer subagent 契约:读什么、裁决 schema、反捏造 + 独立复验、清晰摘要要求。
+- `operator-spec.md` — operator subagent 契约:起/驭/回收 tmux/codex、资源生命周期、detach、回传。
+- `board.md` — 综合看板格式(threads/decisions/ticks/dashboard)+ 每 tick 摘要 schema。
+- `codex-integration.md` — codex 全走 tmux + inject/interrupt + 文件交付 + discover-threads。
 - `goal-contract.md` — /goal 强契约(budget + blocked-stop)。
-- `decision-surface.md` — 决策项格式 + barrier/疑问驱动。
-- `goal-cookbook.md` — codex /goal 参考(吸收自 overseer)。
+- `decision-surface.md` — 决策项格式 + barrier / 疑问驱动。
+- `goal-cookbook.md` — codex /goal 参考。
 
 ## 依赖与边界
 
-硬依赖见 frontmatter `requires`。本 skill 不依赖 oh-my-humanize 运行时——`.omhflow` 例子只作门的
-模式参考,不提升为硬约束。codex-goal-overseer 的能力已并入本 skill。
+硬依赖见 frontmatter `requires`。本 skill 不依赖任何具体项目运行时。外部资料、外部 skills 或
+示例实现只作参考,不覆盖本地约定。

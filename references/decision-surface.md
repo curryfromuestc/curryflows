@@ -18,16 +18,16 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 
 | barrier | 含义 | 触发处 |
 |---|---|---|
-| `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头** | 进 Workflow 之前 |
+| `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头** | 起 worker 之前(封定目标契约) |
 | `merge-main` | 合 main 硬闸:rebase 最新 main + 重跑验证,冲突 settle 不了升此项 | 协调器合 main barrier |
-| `outward-irreversible` | 对外不可逆操作硬闸 | 协调器 / 线程遇不可逆动作 |
-| `model-divergence` | 跨模型真分歧 / 契约缺口,arbiter escalate 出来 | 模板 arbiter → `escalations` |
+| `outward-irreversible` | 对外不可逆操作硬闸 | 协调器 / worker 遇不可逆动作 |
+| `model-divergence` | 跨模型真分歧 / 契约缺口,reviewer escalate、协调器裁不动 | reviewer 裁决 → 协调器收敛 |
 
 ---
 
 ## 2. 纪律(什么入队、什么不入队)
 
-- **agreement + 契约可判 → 自动处理,不入队。** 这是 curryflows 把人类决策队列压到极少数的根本机制(见门 4/5,`base-kernel-gates.md`)。
+- **agreement + 契约可判 → 自动处理,不入队。** 这是 curryflows 把人类决策队列压到极少数的根本机制(reviewer 收敛规则见 `reviewer-spec.md`)。
 - **只有分歧 / 契约缺口 / 不可逆 → 入队。**
 - **`recommendation` 必填**:每个决策项必须带一个有依据的建议,人类是在「确认 / 否决一个有依据的建议」,不是从零裁决。
 - **`evidence` 指向 checked-in artifact,不是 prose**:必须指向 worktree 内 `.curryflows/` 落盘的证据(log / findings / diff / reproducer),不能是一段自然语言描述。
@@ -45,14 +45,14 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 | `barrier` | enum | `seal-contract` \| `merge-main` \| `outward-irreversible` \| `model-divergence` |
 | `thread` | string | 产生该项的 thread 标识(对应 board `threads.jsonl` 里的线程 / 分支) |
 | `summary` | string | 一句话讲清要人判什么 |
-| `divergence` | string | 分歧 / 缺口 / 不可逆点的具体描述(来自 arbiter `escalate[].divergence`) |
+| `divergence` | string | 分歧 / 缺口 / 不可逆点的具体描述(来自 reviewer `escalate` 裁决) |
 | `evidence` | string | 指向 checked-in artifact / reproducer 的路径(**不是 prose**),如 `${worktree}/.curryflows/validate-r2.log`、`xreview-codex-r1.md` |
 | `recommendation` | string | 有依据的建议;**必填**,**必须引用契约 / 权威依据** |
 | `options` | array | 可选项列表(供人类选择) |
 | `status` | string | 决策项状态(如 open / resolved) |
 | `resolution` | string \| null | 人类裁决结果;未决时为空 |
 
-字段对应关系(来自模板 `VERDICT_SCHEMA` 的 `escalate` 项):arbiter 产出的 `escalate[]` 每项含 `{title, divergence, evidence, recommendation}`(`title`/`divergence`/`recommendation` 为 schema 必填),协调器据此组装成上面的完整决策项,补上 `id` / `barrier` / `thread` / `summary` / `options` / `status` / `resolution`。
+字段对应关系(来自 reviewer 裁决,见 `reviewer-spec.md`):`verdict=escalate` 的 reviewer 裁决每项含 `{title, divergence, evidence, recommendation}`(`title`/`divergence`/`recommendation` 必填),协调器收齐多个 reviewer 的裁决、对真分歧裁不动者据此组装成上面的完整决策项,补上 `id` / `barrier` / `thread` / `summary` / `options` / `status` / `resolution`。
 
 示例(一行 JSONL,此处折行仅为可读):
 
@@ -75,11 +75,11 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 
 ## 4. 决策项怎么产生、落到哪
 
-1. 模板内 arbiter 对照 ground truth 裁不动的项 → 写进 verdict 的 `escalate` 数组(`VERDICT_SCHEMA.escalate`)。
-2. bounded loop 内 `if (verdict.escalate && verdict.escalate.length) escalations.push(...verdict.escalate)`,且路由 `escalate` 时 `break`,把控制权交回协调器。
-3. 模板最终 `return` 的对象里带 `escalations`;`status` 为 `blocked-human` 即表示有待人类决策项。
-4. **协调器**把这些 `escalations` 组装成完整决策项,**post 到 `<project>/.curryflows/board/decisions.jsonl`**(per-project 运行态,不进 skill 仓;与 `threads.jsonl` 同目录)。
-5. 人类只在这条队列上工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选,写回 `resolution`。
-6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 继续推进对应 thread。
+1. reviewer 裁决 `verdict=escalate` 的项(对照 ground truth 裁不动),给出 `{title, divergence, evidence, recommendation}`(见 `reviewer-spec.md`)。
+2. 协调器在决策步收齐多个 reviewer 的裁决;一致且依据可判 → 自动处理,**不入队**;真分歧裁不动 → 升人类。
+3. 协调器把升人类的项组装成完整决策项,把对应线程在看板置 `blocked-human`。
+4. **协调器**把这些项 **post 到 `<project>/.curryflows/board/decisions.jsonl`**(per-project 运行态,不进 skill 仓;与 `threads.jsonl` 同目录)。
+5. 人类只在这条队列上异步工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选,写回 `resolution`——**前进不等人**。
+6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 在下个 tick 落地对应 thread。
 
-merge-main 与 outward-irreversible 两类硬闸不经 arbiter,由协调器在合 main barrier / 遇不可逆动作时直接组装决策项 post 到同一 `decisions.jsonl`;seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
+merge-main 与 outward-irreversible 两类硬闸不经 reviewer 裁决,由协调器在合 main barrier / 遇不可逆动作时直接组装决策项 post 到同一 `decisions.jsonl`;seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# locate-codex.sh -- read-only discovery aid for codex-goal-overseer.
+# locate-codex.sh -- read-only discovery aid for curryflows (oversee op).
 #
 # Lists tmux panes that look like a live Codex TUI (live, accepting input -- Codex
 # runs on the PRIMARY screen, so that is the structural signal, not alternate
@@ -69,5 +69,6 @@ else
 fi
 
 echo
-echo "Pick the pane whose cwd matches the transcript's project, then attach:"
-echo "  /codex-goal-overseer <session-id> <session:window.pane>"
+echo "Pick the pane whose cwd matches the transcript's project, then register it"
+echo "to the board so the coordinator's per-tick reviewers audit it (oversee op):"
+echo "  curryflows oversee <session-id> <session:window.pane>"

@@ -8,17 +8,19 @@ send-keys 没有「输入落地校验 + Enter 提交校验 + 有界重试」,会
 
 ## 两种模式
 
-| 维度 | 有界 review | 自驱 |
+| 维度 | 有界 review(可选 codex 第二意见) | 自驱 worker |
 |---|---|---|
 | 启动方式 | `scripts/codex-review.sh`(单 prompt) | codex `/goal` + 强目标契约 |
 | 输入 | 单个 review prompt + 严格输出契约 | `/goal` 七字段强契约(见 `goal-contract.md`) |
 | 输出 | 文件交付:codex 写声明的成果文件,我们读文件 | 长程产物 + 证据,基于证据判完成 |
 | 监督 | **不挂 overseer**(有界,自然终止) | 挂只读审计 + Esc 急停 |
 | 完成判定 | 成果文件出现并稳定 `STABLE_NEEDED` 次 | 契约的 VERIFICATION + BUDGET 硬上限 |
-| 适用 | 一次性跨模型 review 的 codex 腿 | 长程不确定调查(profiling / 复现 / 研究) |
+| 适用 | reviewer 需要 codex 侧第二意见时拉(可选,非每 tick 必跑) | 长程不确定调查(profiling / 复现 / 研究) |
 
-有界 review 是跨模型 review 的「codex 腿」:产物由 codex 与 Claude 各自独立 review,分歧
-即信号(见 `SKILL.md`「跨模型 review」)。自驱才种 `/goal` 并挂监督。
+curryflows 的跨模型默认来自结构:**worker 是 codex、reviewer 是 Claude**,produce 与 review 天然
+跨模型(见 `SKILL.md`、`reviewer-spec.md`)。当某条裁决需要 codex 侧的独立第二意见时,reviewer 才
+调 `codex-review.sh` 拉一份有界 codex 审核——这是可选增强,不是每 tick 必跑。真正干活的 worker 用
+自驱 `/goal` 并挂监督。
 
 ## 为什么不用 codex exec(headless)
 
@@ -105,7 +107,7 @@ codex-review.sh --cwd <dir> --prompt-file <f> --out <findings-path> \
   TUI / 20 pane 不稳 / 40 Escape 后仍 Working / 64 用法。
 
 对目标 codex 的写只有两类:Escape(软停)和人类裁决后注入的指令,其余全只读
-(见 `coordinator.md`「overseer 拆分」)。
+(见 `coordinator.md`「监督拆分」)。
 
 ## discover-threads.py:把所有 codex 会话兜出来
 

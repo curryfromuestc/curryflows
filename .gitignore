@@ -2,5 +2,4 @@ __pycache__/
 *.pyc
 temp/
 .curryflows/
-diagrams/
 .DS_Store

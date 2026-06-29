@@ -203,8 +203,17 @@ def load_board(board_path):
     return True, codex_ids, branches
 
 
+class _UsageParser(argparse.ArgumentParser):
+    """Exit 64 on usage error so it never collides with exit 2 (the
+    in-flight-but-untracked signal callers key on)."""
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"{self.prog}: error: {message}\n")
+        sys.exit(64)
+
+
 def main():
-    ap = argparse.ArgumentParser(description="curryflows read-only resource discovery")
+    ap = _UsageParser(description="curryflows read-only resource discovery")
     ap.add_argument("--sessions-dir",
                     default=os.environ.get("CODEX_SESSIONS_DIR",
                                            os.path.expanduser("~/.codex/sessions")))

@@ -1,0 +1,78 @@
+# operator subagent 契约
+
+operator 是 curryflows tick 的第三步(审核 → 决策 → **操作**)。协调器据 reviewer 裁决决策后,
+派**一个** operator subagent(opus,可改)一次性执行本 tick 的所有写动作:起 / 驭 / 回收 codex
+worker。operator 只执行协调器已定的决策,不自作主张。
+
+> 在 `SKILL.md` 的 references 索引中,本文件登记为:`operator-spec.md` — operator subagent
+> 契约:起/驭/回收 tmux/codex、资源生命周期、detach、回传。
+
+## 角色与边界
+
+- **agentType**:`general-purpose`(读写 + Bash + tmux + git)。
+- **模型**:opus。
+- **只执行决策**:operator 拿到的是协调器定好的动作清单(起哪些 worker、驭哪些、回收哪些),
+  不重新审产物、不重新决策。
+- **对目标 codex 的写只有两类**:Escape(软停)和人类裁决后注入的指令,其余全只读。
+- **唯一驱动器**:`inject-steer.sh`(注入)/ `interrupt-target.sh`(软停)。**绝不手搓
+  `tmux send-keys`** 操作 codex 输入框(TUI 渲染时序 racy,会静默丢消息,见 `codex-integration.md`)。
+
+## 三类动作
+
+### 1) 起新 worker(detach,长跑不随 operator 退出而死)
+
+对协调器标记的 `state=ready` 线程:
+
+```bash
+# 建独立分支 + worktree(base 可配)
+git -C <projectDir> worktree add -b curryflows/<thread-id> \
+  ~/.cache/curryflows/worktrees/<project>/<thread-id> <base-ref>
+# 在 detached tmux 里起 codex,注入封定的目标契约
+tmux new-session -d -s cfx_<thread-id> -c <worktree>
+# 等 TUI 可注入,再用 inject-steer.sh send 注入 /goal 契约文本(经文件传入)
+```
+
+**关键:codex /goal 跑在 detached tmux 里,tmux server 常驻;operator 起完它就回传退出,长跑线程
+归 tmux + 看板所有,绝不随 operator subagent 的生命周期结束而死。** 起完立即拿到 rollout 的
+session-id 回传给协调器,协调器写回看板(见 `goal-contract.md`「启动后立即注册」),否则下个 tick
+的 reviewer 会把它标成 `UNREGISTERED`。
+
+不用 `codex exec`(headless):SSH 断连会带走 headless 进程,在途进度丢失、无法重连。走 tmux 才能
+断连重连不丢进度(见 `codex-integration.md`)。
+
+### 2) 驭在途 worker
+
+- **注入人类裁决后的指令**:`inject-steer.sh send <pane> <prompt-file>`(文本经文件传入,CJK /
+  引号 / 换行不被二次解析)。
+- **软停**:`interrupt-target.sh <pane>` 发单个 Escape——codex 进程存活、goal 上下文完整,只停
+  在途 turn,供人类 review 后再指示。
+
+### 3) 回收资源(用完即删,硬职责)
+
+对协调器标记的可回收集(跑完 / 孤儿,由 reviewer 经 `discover-threads.py` 对账得出),**逐个资源**
+调 `reap.sh`,以便每个资源的退出码可独立归属到回传 `reaped[].exit_code`:
+
+```bash
+bash <skillDir>/scripts/reap.sh --session <tmux-session> --project <projectDir>   # kind=session
+bash <skillDir>/scripts/reap.sh --worktree <path>       --project <projectDir>   # kind=worktree
+bash <skillDir>/scripts/reap.sh --branch <name>         --project <projectDir>   # kind=branch
+```
+
+`reap.sh` 做:`tmux kill-session`(若存在)/ `git worktree remove --force` + `git worktree prune` /
+`git branch -D <name>`(force;护栏:拒删 main/master/当前分支)。**回收是每 tick 硬职责,不指望任何
+收尾钩子**——这正是补上"清理是死代码、资源无限堆积"的坑。**回收前该资源必须已被协调器判为可回收**
+(worker 已跑完,或人类已裁决 merged / rolled-back);operator 不擅自回收在途 worker,也不自行判断
+分支是否已合入——是否回收由上游决策定。
+
+## 回传 schema
+
+operator 回一个对象给协调器(协调器据此写回看板):
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `launched` | array | 本 tick 起的 worker:`{thread_id, codex_session, branch, worktree, tmux_session}` |
+| `steered` | array | 本 tick 驭的 worker:`{thread_id, action: inject\|interrupt, ref}` |
+| `reaped` | array | 本 tick 回收的资源:`{kind: session\|worktree\|branch, ref, exit_code}` |
+| `failures` | array | 失败的动作 + 退出码 + 原因(**如实回报,不绿洗**) |
+
+任何脚本非零退出都进 `failures` 如实回报,不得当成功。

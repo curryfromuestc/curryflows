@@ -27,7 +27,7 @@
 #   STEER_CMD_ALLOWLIST   regex of pane process names treated as Codex (default: codex)
 #   STEER_REQUIRE_CODEX   require the pane to be a Codex process (default 1; 0 relaxes)
 #   STEER_PROMPT_GLYPH    input-box prompt glyph (default U+203A)
-#   STEER_EVIDENCE_DIR    base dir for evidence (default ./temp/codex-goal-overseer)
+#   STEER_EVIDENCE_DIR    base dir for evidence (default ./temp/curryflows)
 #   INTERRUPT_SETTLE_TRIES  post-Escape poll attempts for "no longer Working" (default 40, ~6s)
 #   INTERRUPT_WORKING_RE    regex marking the streaming/Working state (default below)
 

@@ -48,7 +48,7 @@
 #   STEER_SIG_LEN         tail-signature length in normalized chars (default 40)
 #   STEER_REQUIRE_CODEX   require the pane to be a Codex process (default 1; 0 relaxes)
 #   STEER_PROMPT_GLYPH    input-box prompt glyph used to find the live input line (default U+203A)
-#   STEER_EVIDENCE_DIR    base dir for evidence (default ./temp/codex-goal-overseer)
+#   STEER_EVIDENCE_DIR    base dir for evidence (default ./temp/curryflows)
 
 set -uo pipefail
 
@@ -74,7 +74,7 @@ usage() {
 
 EVID=""
 _evidence_dir() {
-  local base="${STEER_EVIDENCE_DIR:-./temp/codex-goal-overseer}"
+  local base="${STEER_EVIDENCE_DIR:-./temp/curryflows}"
   local stamp; stamp="$(date +%Y%m%d-%H%M%S)-$$"
   if mkdir -p "$base/steer-$stamp" 2>/dev/null; then
     EVID="$base/steer-$stamp"
