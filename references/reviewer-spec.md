@@ -1,17 +1,24 @@
-# reviewer subagent 契约
+# reviewer / arbiter 契约
 
-reviewer 是 curryflows tick 的第一步(审核优先)。协调器每个 tick **并发派多个** reviewer
-subagent(一律 opus,只读),各取不同 lens。reviewer 把巨型 transcript / diff 隔离在自己上下文里,
+> **执行载体(本轮 CANON)**:reviewer / arbiter 面板不再由协调器手搓并发派 subagent,而是由
+> Claude Code **官方 Workflow** 承载执行——协调器每个 tick 调 `Workflow({ scriptPath:
+> "<skillDir>/workflows/review-panel.js", ... })` 跑随仓附带的参考脚本 `workflows/review-panel.js`。
+> 本文件是该 Workflow 实现 reviewer / arbiter 时必须遵守的**契约规范**(lens、verdict schema、
+> 反捏造、跨模型硬规则、独立复验、两个状态机介入点、arbiter 收敛不投票),语义不变,只改"由谁执行"。
+
+reviewer 是 curryflows tick 的第一步(审核优先)。`review-panel.js` 内部 pipeline 逐线程:stage1
+**并发多 lens**(一律 opus,只读),各取不同 lens;reviewer 把巨型 transcript / diff 隔离在自己上下文里,
 只回一条蒸馏裁决——这是协调器主 session 不被撑爆的前提。
 
-> 在 `SKILL.md` 的 references 索引中,本文件登记为:`reviewer-spec.md` — reviewer subagent
-> 契约:读什么、裁决 schema、反捏造 + 独立复验、清晰摘要要求。
+> 在 `SKILL.md` 的 references 索引中,本文件登记为:`reviewer-spec.md` — reviewer / arbiter
+> 契约(由官方 Workflow `workflows/review-panel.js` 执行):读什么、裁决 schema、反捏造 + 独立复验、
+> 清晰摘要要求。
 
 ## 角色与边界
 
-- **agentType**:`Explore`(只读 + Bash)。reviewer **不改任何代码、不操作 tmux**(写动作全归
-  operator)。
-- **模型**:opus(所有 subagent 一律强力)。
+- **agentType**:`Explore`(只读 + Bash),由 `workflows/review-panel.js` stage1 拉起。reviewer
+  **不改任何代码、不操作 tmux**(写动作全归 operator —— operator 仍是 curryflows 的 subagent,**非** Workflow)。
+- **模型**:opus(所有 lens / arbiter 一律强力)。
 - **跨模型**:worker 是 codex、reviewer 是 Claude,produce 与 review 天然跨模型。多个 reviewer
   各取不同 lens(正确性 / 安全 / 复现 / 越界 / 不变量),各自独立,互不可见。
 - **上下文隔离**:transcript 可达几百 MB,reviewer 读它、消化它,**只回裁决**;原文绝不进协调器。
@@ -87,25 +94,27 @@ reviewer 在线程状态机里有两个**不同**的介入点,二者职责不可
 - **证据指向 checked-in artifact,不是 prose**:裁决里引用的证据必须是 worktree 内 `.curryflows/`
   落盘的文件路径(log / findings / diff / reproducer),不能是一段自然语言。
 - **调 codex 第二意见时严禁捏造**:若本 reviewer 用 `scripts/codex-review.sh` 拉 codex 侧审核,
-  脚本非零退出即返回 `{reviewer:'codex', failed:true, findings:[]}`,**严禁补造 findings**。
+  脚本非零退出即返回 `{lens:'codex', verdict:'failed', failed:true, findings:[]}`,**严禁补造 findings**。
 - **裁决必含异议**:若与其它 lens / 与 worker 自述不一致,必须如实写出分歧,不许为了"通过"而抹平。
 
 ## 裁决 schema(reviewer 的回传)
 
-每个 reviewer 回一个对象(协调器据多个 reviewer 的裁决收敛):
+每个 lens reviewer 回一个对象(stage2 由每线程 arbiter 收敛:**不投票**、对照契约 ground truth、
+裁不动则 escalate;`review-panel.js` 最终把收敛后的 `reviews[] / escalations[]` 回传协调器):
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `thread` | string | 被审线程 / 分支标识 |
-| `lens` | string | 本 reviewer 的视角(correctness / security / repro / bounds / invariant …) |
-| `verdict` | enum | `pass` \| `continue` \| `escalate` \| `runaway`(对资源对账项) |
+| `lens` | string | 本 reviewer 的视角(correctness / security / repro / bounds / invariant …);codex 腿填 `codex` |
+| `verdict` | enum | `pass` \| `continue` \| `escalate` \| `runaway`(资源对账项) \| `failed`(codex 腿脚本非零退出) |
 | `findings` | array | 每项 `{title, severity, evidence(路径), reproducible(步骤或测试缺口)}` |
 | `dissent` | string \| null | 与其它视角 / worker 自述的分歧;无则 null,**不许省略字段** |
 | `unverified` | array | 本 lens 未能独立核实的点(强制如实列出) |
 | `resources` | array | 资源对账结果:`{kind: unregistered\|runaway-suspect\|orphan\|reclaimable, ref, evidence}` |
+| `failed` | bool | 本 lens(典型为 codex 腿)是否因脚本非零退出而失败;失败时 `findings` 必须为空 |
 
-`verdict=escalate` 的项还需给 `{divergence, recommendation}`,供协调器组装决策项(见
-`decision-surface.md`)。
+per-lens 对象**不含** `thread`——arbiter 收敛后每个外层 `reviews[]` 项才叠加 `thread / branch /
+worktree`;其 `escalate[]` 每项给 `{title, divergence, evidence(路径), recommendation}`,供协调器
+组装决策项(见 `decision-surface.md`)。
 
 ## 清晰、不糊弄
 

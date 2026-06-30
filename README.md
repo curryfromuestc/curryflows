@@ -2,14 +2,15 @@
 
 把人类 review 从构建关键路径上解耦的**通用工作流协调器 skill**。
 
-一个 `/loop` 协调器以"审核优先"并发推进多个在 tmux 里长跑的 codex `/goal` worker:每个 tick 先并发
-派多个强力(opus)reviewer subagent 审产物 + 对账资源,协调器据裁决决策,再派一个 operator subagent
-去操作 tmux(起 / 驭 / 回收 codex)。worker 是 codex、reviewer 是 Claude,**天然跨模型**;裁决只回
+一个 `/loop` 协调器以"审核优先"并发推进多个在 tmux 里长跑的 codex `/goal` worker:每个 tick 先调官方
+Workflow 跑 `workflows/review-panel.js`(跨模型多 lens reviewer + arbiter 收敛,opus、只读)审产物 +
+对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux(起 / 驭 / 回收 codex)。worker
+是 codex、reviewer 是 Claude,**天然跨模型**;裁决只回
 一条清晰摘要给主 session,完整证据落 durable 看板,**人类异步看、异步决策,默认不阻断推进**——只在
 合 main、对外不可逆、跨模型真分歧三种 barrier 才升人类。
 
-唯一硬约束:**协调器(主 session)上下文绝不被巨型 transcript / diff 撑爆**——重活全在 subagent 里
-完成,subagent 的大上下文随它消亡,协调器只收蒸馏结论。
+唯一硬约束:**协调器(主 session)上下文绝不被巨型 transcript / diff 撑爆**——重活全在 Workflow /
+subagent 的隔离上下文里完成,其大上下文随之消亡,协调器只收蒸馏结论。
 
 完整设计见 [`SKILL.md`](SKILL.md) 与 `references/`。
 
@@ -24,7 +25,8 @@
 外层 `/loop` 反应式循环是 Claude Code 内置原语,curryflows **不重造它**;其不可替代价值收窄为 `/loop`
 之上、Workflow 工具做不到的:**tmux 跨会话长跑的自驱 codex /goal 群 + 防 runaway 对账 + durable 异步
 人类决策面 + worker 生命周期/分阶段 reap**。判据:能在一次有界 episode 内跑完的交给 ultracode;要在
-tmux 里长跑、跨会话、防跑飞、人类异步裁决的才是 curryflows。
+tmux 里长跑、跨会话、防跑飞、人类异步裁决的才是 curryflows。curryflows 自己的 review 步骤就是用官方
+Workflow(`workflows/review-panel.js`)实现的。
 
 ## 安装
 
@@ -66,8 +68,9 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
 
 1. **协调器(`/loop` 动态模式)= 外层调度**:极薄,只做推理、决策、派发、写看板;自己不读大文件、
    不跑脚本。无就绪事项时 park,被事件唤醒。
-2. **subagent 派发 = 内层有界动作**:每 tick 先并发派多个 reviewer subagent(opus,只读)审产物 +
-   对账资源,协调器决策后再派一个 operator subagent(opus,可改)操作 tmux/codex。所有 subagent 一律 opus。
+2. **内层有界动作**:每 tick 先调官方 Workflow 跑 `workflows/review-panel.js` 这个 review 面板(opus,
+   只读)审产物 + 对账资源,协调器决策后再派一个 operator subagent(opus,可改)操作 tmux/codex。
+   operator 仍是 subagent,一律 opus。
 3. **codex `/goal` = 自驱 worker**:真正干活的长跑线程,在 detached tmux 里跑,由强目标契约
    (budget + blocked-stop)+ 只读审计 + Esc 急停兜住。
 
@@ -82,6 +85,7 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
   `serve-board.py`(本地端口 serve 实时看板)、`reap.sh`(资源回收,分阶段)、
   `inject-steer.sh` / `interrupt-target.sh` / `locate-codex.sh`(codex 的 tmux 驱动器)、
   `codex-review.sh`(codex 第二意见腿:worker=codex 时可选、worker=Claude 时必需)。
+- `workflows/` — 官方 Workflow 参考脚本:`review-panel.js`(内层 review 面板的官方 Workflow 参考脚本)。
 - `task-contracts/` — `task.md` 通用任务契约骨架(给项目 copy 填写,经 seal-contract 人封)。
 
 ## 每个项目的运行态(不进本仓)

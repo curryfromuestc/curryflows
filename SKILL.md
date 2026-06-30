@@ -5,8 +5,8 @@ description: >-
   按任务动态切:确定性/有界任务(实现一批、评审 diff、研究、内层扇出+对抗验证)走 ultracode 官方
   Workflow、不用本 skill;curryflows 专管 tmux 里长跑、跨会话、防 runaway 的自驱 codex /goal 群 +
   durable 异步人类决策面。一个 /loop 协调器以"审核优先"
-  推进多个在 tmux 里长跑的 codex /goal worker:每个 tick 先并发派多个强力(opus)reviewer
-  subagent 审产物 + 对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux
+  推进多个在 tmux 里长跑的 codex /goal worker:每个 tick 调官方 Workflow(workflows/review-panel.js)
+  跑 review 面板审产物 + 对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux
   (起/驭/回收 codex)。worker 是 codex、reviewer 是 Claude,天然跨模型;裁决只回一条清晰摘要
   给主 session,完整证据落 durable 看板,人类异步看、异步决策,默认不阻断推进——只在合 main、
   对外不可逆、跨模型真分歧三种 barrier 才升人类。自驱 codex /goal 挂强目标契约(budget +
@@ -58,8 +58,8 @@ Workflow 工具做不到的这一层:
 4. **worker 生命周期状态机 + 分阶段 reap + 已封契约 fail-closed 门**。
 
 判据:**凡能在一次有界 episode 内跑完的 → ultracode;只有"要在 tmux 里长跑、跨会话、防跑飞、人类
-异步裁决"的 → curryflows。** curryflows 自己 tick 内的有界扇出(reviewer 面板)也可直接委派给官方
-Workflow 工具,不必手搓。
+异步裁决"的 → curryflows。** curryflows 自己 tick 内的有界扇出(reviewer 面板)即由
+`workflows/review-panel.js` 这个官方 Workflow 承载执行,协调器每 tick 调 Workflow 工具跑它。
 
 ## 唯一的硬约束:不爆主 session 上下文
 
@@ -74,9 +74,9 @@ transcript / diff / 裁决全文撑爆**。一切重活——读几百 MB 的 co
 1. **协调器(`/loop` 动态模式)= 外层调度**:极薄,只做推理、决策、派发、写看板,自己不读大
    文件、不跑脚本。维护在途线程图,无就绪事项时 park 释放上下文,被事件(线程完成、人类回复、
    定时)唤醒。这一层是 agent 推理,**不是**确定性编排脚本。
-2. **subagent 派发 = 内层有界动作**:每个 tick 先并发派多个 **reviewer subagent**(opus,只读)
-   审产物 + 对账资源;协调器据裁决决策后,再派一个 **operator subagent**(opus,可改)去操作
-   tmux/codex(起/驭/回收)。所有 subagent 一律强力(opus)。
+2. **内层有界动作**:每个 tick 先调官方 Workflow 工具跑 **`workflows/review-panel.js`**(review 面板,
+   只读)审产物 + 对账资源;协调器据裁决决策后,再派一个 **operator subagent**(opus,可改)去操作
+   tmux/codex(起/驭/回收)。review 面板由官方 Workflow 承载,operator 仍是强力(opus)subagent。
 3. **codex `/goal` = 自驱 worker**:真正干活的长跑线程,在 detached tmux 里跑,由强目标契约
    (budget + blocked-stop)+ 只读审计 + Esc 急停兜住(见 `references/goal-contract.md`)。
 
@@ -87,9 +87,11 @@ transcript / diff / 裁决全文撑爆**。一切重活——读几百 MB 的 co
 
 每个 tick 严格按此顺序(完整 runbook 见 `references/coordinator.md`):
 
-1. **审核(先派 N 个 reviewer subagent,并发,跨模型,各自隔离上下文)**:它们顺手读资源真值
-   (`scripts/discover-threads.py` + 看板)、读在途 codex worker 的 transcript/diff,审产物,
-   各回一条**清晰、不糊弄**的裁决(含异议)。巨型 transcript 隔离在 subagent 内,绝不进协调器。
+1. **审核(协调器调官方 Workflow 工具跑 `workflows/review-panel.js`,只读)**:Workflow 内部逐线程
+   pipeline——stage1 并发多 lens(correctness/bounds/invariant/repro,各自隔离上下文)+ 每 lens 跑
+   `scripts/discover-threads.py` 资源对账 + 跨模型硬规则(worker 非 codex 时追加 `codex-review.sh`
+   腿),stage2 arbiter 对照契约收敛(**不投票**、裁不动则 escalate);返回 `{reviews, escalations}`。
+   巨型 transcript 隔离在各 lens agent 内,绝不进协调器。
 2. **决策(协调器,薄)**:收齐裁决 → 收敛;多裁决一致且依据可判就自动处理,真分歧裁不动 →
    升人类决策项(不投票)。同时落地人类已回复的决策项。
 3. **操作(后派 1 个 operator subagent)**:按决策操作 tmux/codex——detach 起新 /goal、
@@ -111,11 +113,11 @@ transcript / diff / 裁决全文撑爆**。一切重活——读几百 MB 的 co
 
 ## 跨模型 review(本 skill 的招牌)
 
-worker 是 codex、reviewer 是 Claude opus,produce 与 review 天然跨模型;每 tick 派**多个**
-reviewer(不同 lens,各自独立),分歧即信号:一致且依据可判 → 自动处理;真分歧 → 对照 ground
-truth(契约 / 权威文档 / GOLD oracle / 复现)裁,**不投票**;裁不动 → 升人类。需要 codex 第二
-意见时,reviewer 可调 `scripts/codex-review.sh` 拉一份 codex 侧审核(默认 worker=codex 时为可选,
-非每 tick 必跑)。
+worker 是 codex、reviewer 是 Claude opus,produce 与 review 天然跨模型;每 tick 由
+`workflows/review-panel.js` 这个官方 Workflow 扇出**多个**reviewer(不同 lens,各自独立),分歧即
+信号:一致且依据可判 → 自动处理;真分歧 → 对照 ground truth(契约 / 权威文档 / GOLD oracle /
+复现)裁,**不投票**;裁不动 → 升人类。需要 codex 第二意见时,该 Workflow 调 `scripts/codex-review.sh`
+拉一份 codex 侧审核(默认 worker=codex 时为可选,非每 tick 必跑)。
 **硬规则:跨模型 review 仅当 `worker.model != reviewer.model` 才成立。** 默认 worker=codex /goal、
 reviewer=Claude opus → 天生跨模型;但若某线程的 worker 是 Claude subagent(非 codex),则至少一个
 reviewer 必须是 codex 腿(`scripts/codex-review.sh`)——此时 codex-review.sh 是**必需**、不是可选,
@@ -184,13 +186,19 @@ pane 上用 send-keys 启动 codex 二进制是允许的,见 `references/codex-i
 
 - `architecture.md` — 三层模型、审核优先 tick、跨模型 review、barrier、subagent 边界。
 - `coordinator.md` — coordinator tick runbook + `/loop` prompt。
-- `reviewer-spec.md` — reviewer subagent 契约:读什么、裁决 schema、反捏造 + 独立复验、清晰摘要要求。
+- `reviewer-spec.md` — reviewer / arbiter 契约(由官方 Workflow `workflows/review-panel.js` 执行):读什么、裁决 schema、反捏造 + 独立复验、清晰摘要要求。
 - `operator-spec.md` — operator subagent 契约:起/驭/回收 tmux/codex、资源生命周期、detach、回传。
 - `board.md` — 综合看板格式(threads/decisions/ticks/dashboard)+ 每 tick 摘要 schema。
 - `codex-integration.md` — codex 全走 tmux + inject/interrupt + 文件交付 + discover-threads。
 - `goal-contract.md` — /goal 强契约(budget + blocked-stop)。
 - `decision-surface.md` — 决策项格式 + barrier / 疑问驱动。
 - `goal-cookbook.md` — codex /goal 参考。
+
+## Workflow 脚本(非 references)
+
+- `workflows/review-panel.js` — 随仓附带的官方 Workflow 参考脚本:协调器每 tick 调官方 Workflow 工具
+  跑它(逐线程 pipeline:stage1 并发多 lens + 资源对账 + 跨模型硬规则,stage2 arbiter 收敛/escalate),
+  返回 `{reviews, escalations}`。前提:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow。
 
 ## 依赖与边界
 
