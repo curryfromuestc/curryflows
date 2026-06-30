@@ -13,6 +13,19 @@
 
 完整设计见 [`SKILL.md`](SKILL.md) 与 `references/`。
 
+## 与 ultracode 官方 Workflow 的分工
+
+开局同时挂 **ultracode + curryflows**,按任务动态切:
+
+- **确定性 / 有界任务**(实现一批、评审 diff、研究、内层扇出 + 对抗验证)→ **ultracode 官方 Workflow,
+  不用 curryflows**(原生更省事)。
+- **非确定 / 长跑 / 跨会话 / 把人类 review 从关键路径解耦** → **curryflows**。
+
+外层 `/loop` 反应式循环是 Claude Code 内置原语,curryflows **不重造它**;其不可替代价值收窄为 `/loop`
+之上、Workflow 工具做不到的:**tmux 跨会话长跑的自驱 codex /goal 群 + 防 runaway 对账 + durable 异步
+人类决策面 + worker 生命周期/分阶段 reap**。判据:能在一次有界 episode 内跑完的交给 ultracode;要在
+tmux 里长跑、跨会话、防跑飞、人类异步裁决的才是 curryflows。
+
 ## 安装
 
 本仓是一个 Claude Code skill。安装方式 = `git clone` 进 skills 目录:
