@@ -188,16 +188,19 @@ rollout id。
 0. **前提**:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow(开局同挂 ultracode + curryflows),
    否则 tick 第一步无法调 `Workflow` 工具跑 `review-panel.js`。
 1. 确保看板目录存在:`mkdir -p ./.curryflows/board`。
-2. **后台拉起看板服务**(每次请求实时重渲染,人类浏览器看实时状态):
+2. **拉起看板服务(serve-board)——用 Bash 工具的后台模式(`run_in_background: true`),绝不用
+   `nohup` / `setsid` / `&` / 前台 `sleep`**(sandbox 会杀掉它们,已观测 `exit 144` 把整条命令一并杀,
+   进程根本起不来):
 
    ```bash
-   nohup python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board \
-     --port 8787 >./.curryflows/temp/serve-board.log 2>&1 &
-   # → http://127.0.0.1:8787/(SSH 机器端口转发即可)
+   python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board --port 8787 --host 0.0.0.0
+   # 经 Bash run_in_background:true 运行;--host 0.0.0.0 让 IP 直连 + 端口转发都通(暴露局域网,介意就去掉)
    ```
 
-   serve-board 是只读的、独立于协调器生命周期的常驻进程;协调器每 tick 只写 jsonl,serve 端实时
-   重渲染,无需协调器再单独刷 HTML。
+   起完别被代理假象骗:`curl --noproxy '*' -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/`
+   得 `200` 才算真起来(本机代理常把它拦成 503,是假象,不代表进程死)。serve-board 只读、session 级
+   后台进程(随协调器会话存活,跨 tick / park 不死),协调器每 tick 只写 jsonl,serve 端实时重渲染。
+   启动 / 访问(VSCode 转发 / `ssh -L` / IP 直连)/ 排错(`no_proxy`)完整见 `board.md`「看板服务」。
 
 ## `/loop` prompt 文本范例
 

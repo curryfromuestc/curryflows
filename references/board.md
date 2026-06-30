@@ -29,13 +29,47 @@
 python3 <skillDir>/scripts/render-board.py --board ./.curryflows/board   # 写 dashboard.html
 ```
 
-`start` 协调器时顺带后台拉起 `serve-board.py`,在本地端口 serve 看板——**每次请求实时重渲染** +
-页面自带自动刷新,人类浏览器里看实时状态(SSH 机器端口转发即可):
+## 看板服务(serve-board):启动 / 访问 / 排错
+
+`start` 协调器时顺带拉起 `serve-board.py`——只读、**每请求实时重渲染** + 页面自带自动刷新。按下面来,
+**别再 `nohup`**。
+
+### 启动:用 Bash 工具的后台模式,不要 nohup/setsid/&/sleep
 
 ```bash
-python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board --port 8787 &
-# → http://127.0.0.1:8787/
+python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board --port 8787 --host 0.0.0.0
 ```
+
+- **经 Bash 工具的后台模式(`run_in_background: true`)运行这条命令**,协调器记下返回的后台任务 id。
+  **绝不用 `nohup` / `setsid` / `&` / 前台 `sleep` 去拉起或等待**——本环境 sandbox 会杀掉它们(已观测
+  `exit 144`,把含后台启动的整条命令一并杀死,进程根本起不来)。Bash 后台模式由 harness 托管、跨
+  tick / park 存活、进程退出会回调通知协调器。
+- serve-board 是 **session 级**后台进程(随协调器会话存活,跨 tick / park 不死);要它脱离会话长期常驻,
+  得在 curryflows 之外手动起。
+
+### host 绑定:决定谁能访问(runbook 默认 0.0.0.0,暴露局域网)
+
+- 上面传 `--host 0.0.0.0`,这样**服务器 IP 直连**和**端口转发**都通——代价是只读看板**暴露到局域网**。
+  介意局域网可见就去掉 `--host 0.0.0.0`(脚本默认 `127.0.0.1`,只本机 / 转发可达)。
+- `--port` 默认 8787;传 `--port 0` 让它自动选空闲端口(从 stdout 读回实际 URL)。
+
+### 访问(三选一)
+
+1. **VSCode / Cursor 远程**:自动转发 8787 → 浏览器开 `http://127.0.0.1:8787/`(127.0.0.1 绑定即可)。
+2. **纯 SSH**:`ssh -L 8787:localhost:8787 <user>@<server>` → 开 `http://127.0.0.1:8787/`(127.0.0.1 绑定即可)。
+3. **服务器 IP 直连**:需 `--host 0.0.0.0` → 开 `http://<server-ip>:8787/`。
+
+### 排错:本机 curl 回 503/502 ≠ 进程死了
+
+很多环境本机挂了 HTTP 代理,`curl http://127.0.0.1:8787/` 会被代理拦成 **503 / 502**,这是**假象**,
+不代表 serve-board 死了。真实性核验要**绕过代理**:
+
+```bash
+curl --noproxy '*' -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/   # 200 = 正常
+ss -ltnp | grep 8787                                                              # 确认在监听
+```
+
+浏览器同理打不开:把 `127.0.0.1` / `<server-ip>` 加进 `no_proxy` 白名单。
 
 ## board 写入:用 board.py,不手编 JSONL
 
