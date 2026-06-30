@@ -1,26 +1,35 @@
 # codex 集成:全走 tmux,两种模式
 
-curryflows 对 codex 的所有操作都走 tmux,唯一的驱动器是 `scripts/inject-steer.sh` 和
-`scripts/interrupt-target.sh`。**绝不手搓 `tmux send-keys`** 去操作 codex 输入框:TUI 的
-渲染时序是 racy 的,一个已观测到的失败模式是大段 paste 之后第一个 Enter 静默不生效;手搓
-send-keys 没有「输入落地校验 + Enter 提交校验 + 有界重试」,会静默丢消息。inject-steer.sh
-把这套注入流程做成确定性的(见该脚本头注与下文「驱动器契约」)。
+curryflows 对 codex 的所有操作都走 tmux。**send-keys 的边界按 pane 状态划分**:刚起的
+detached pane 是普通 shell,所以用 `tmux send-keys` / `tmux new-session "<cmd>"` 在该 shell
+pane 上启动 codex 二进制是允许的(`codex-review.sh` 与 operator 起会话正是这么做);但**一旦
+codex TUI 起来,之后所有输入必须走 `scripts/inject-steer.sh`,绝不对 live codex TUI 手搓 raw
+`tmux send-keys`**。理由是 live TUI 的渲染时序是 racy 的,一个已观测到的失败模式是大段 paste
+之后第一个 Enter 静默不生效;手搓 send-keys 没有「输入落地校验 + Enter 提交校验 + 有界重试」,
+会静默丢消息。inject-steer.sh 把这套注入流程做成确定性的(见该脚本头注与下文「驱动器契约」)。
+Escape 软停走 `scripts/interrupt-target.sh`,同样不对 live TUI 手搓 raw send-keys。
 
 ## 两种模式
 
-| 维度 | 有界 review(可选 codex 第二意见) | 自驱 worker |
+| 维度 | 有界 review(codex 第二意见腿) | 自驱 worker |
 |---|---|---|
 | 启动方式 | `scripts/codex-review.sh`(单 prompt) | codex `/goal` + 强目标契约 |
 | 输入 | 单个 review prompt + 严格输出契约 | `/goal` 七字段强契约(见 `goal-contract.md`) |
 | 输出 | 文件交付:codex 写声明的成果文件,我们读文件 | 长程产物 + 证据,基于证据判完成 |
 | 监督 | **不挂 overseer**(有界,自然终止) | 挂只读审计 + Esc 急停 |
 | 完成判定 | 成果文件出现并稳定 `STABLE_NEEDED` 次 | 契约的 VERIFICATION + BUDGET 硬上限 |
-| 适用 | reviewer 需要 codex 侧第二意见时拉(可选,非每 tick 必跑) | 长程不确定调查(profiling / 复现 / 研究) |
+| 适用 | worker=codex 时可选(跨模型已由结构成立,非每 tick 必跑);worker=Claude subagent 时**必需**(否则单模型,见下) | 长程不确定调查(profiling / 复现 / 研究) |
 
-curryflows 的跨模型默认来自结构:**worker 是 codex、reviewer 是 Claude**,produce 与 review 天然
-跨模型(见 `SKILL.md`、`reviewer-spec.md`)。当某条裁决需要 codex 侧的独立第二意见时,reviewer 才
-调 `codex-review.sh` 拉一份有界 codex 审核——这是可选增强,不是每 tick 必跑。真正干活的 worker 用
-自驱 `/goal` 并挂监督。
+curryflows 的跨模型来自一条硬规则:**跨模型 review 仅当 worker.model != reviewer.model 才成立**。
+默认 worker 是 codex `/goal`、reviewer 是 Claude opus,produce 与 review 天然跨模型(见 `SKILL.md`、
+`reviewer-spec.md`);此时 `codex-review.sh` 是可选增强——某条裁决需要 codex 侧独立第二意见时
+reviewer 才拉一份有界 codex 审核,不是每 tick 必跑。
+
+但**若某线程的 worker 是 Claude subagent(非 codex),则至少一个 reviewer 必须是 codex 腿
+(`codex-review.sh`)**:此时 worker 与 Claude reviewer 同模型,只有把 codex-review.sh 拉进来,
+reviewer 模型集合里才会出现与 worker 不同的模型。这种情形下 codex-review.sh 是**必需,不是可选**;
+否则审核退化为单模型,跨模型保证作废。协调器必须保证 reviewer 模型集合里存在与 worker 不同的模型。
+真正干活的默认 worker 用自驱 `/goal` 并挂监督。
 
 ## 为什么不用 codex exec(headless)
 

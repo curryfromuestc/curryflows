@@ -79,7 +79,18 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 2. 协调器在决策步收齐多个 reviewer 的裁决;一致且依据可判 → 自动处理,**不入队**;真分歧裁不动 → 升人类。
 3. 协调器把升人类的项组装成完整决策项,把对应线程在看板置 `blocked-human`。
 4. **协调器**把这些项 **post 到 `<project>/.curryflows/board/decisions.jsonl`**(per-project 运行态,不进 skill 仓;与 `threads.jsonl` 同目录)。
-5. 人类只在这条队列上异步工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选,写回 `resolution`——**前进不等人**。
-6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 在下个 tick 落地对应 thread。
+5. 人类只在这条队列上异步工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选;裁决结果**通过 `board.py resolve-decision --id <did> --resolution <text> [--status resolved|rejected]` 写回**——`board.py` 是 `decisions.jsonl` 的唯一写入者,**绝不手编 `decisions.jsonl`**(手编易写坏行,而 `render-board.py` 对坏行静默跳过会无声丢决策)——**前进不等人**。
+6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 在下个 tick 落地对应 thread(落地两条路见第 5 节)。
 
 merge-main 与 outward-irreversible 两类硬闸不经 reviewer 裁决,由协调器在合 main barrier / 遇不可逆动作时直接组装决策项 post 到同一 `decisions.jsonl`;seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
+
+---
+
+## 5. 裁决怎么落地:扩展(relaunch)而非回滚
+
+人类在某项写回 `resolution`(经 `board.py resolve-decision`,见第 4 节第 5 步)后,协调器在下个 tick 读回(`board.py list-decisions --open` 把已 resolved 项收敛掉),按裁决落地对应 thread。**裁决落地是「扩展」还是「回滚」由人类选的 `option` 决定**,两条路都不手编 JSONL——thread 状态 / `attempt` / `codex_session` 经 `board.py upsert-thread` 写,decision 状态经 `board.py resolve-decision` 写。
+
+- **扩展(relaunch)**:人类选了一个让线程**继续推进**的 option(如第 3 节示例里的「排队(贴合不丢请求)」或「补契约后重跑」)。此时协调器**复用该线程现有 worktree + 分支(不重建 worktree)**,起一个**全新 codex 会话**,注入更新后的已封契约;通过 `board.py upsert-thread` 把该线程 `state` 置回 `running`、`attempt` 加一、`codex_session` 更新为新 rollout id。这是扩展,**不是回滚**——既有进度、分支与 worktree 全部保留(relaunch 操作细节见 `coordinator.md`)。
+- **回滚(rollback)**:人类裁决放弃该线程时才走 `rolled-back` 终态(回收 worktree + 分支)。扩展决策**不得**误落成回滚。
+
+`blocked-human` 线程在裁决落地后即离开该状态:扩展 → `running`,回滚 → `rolled-back`。

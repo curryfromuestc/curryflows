@@ -70,16 +70,17 @@ BUDGET: 上限 <N> tokens(或 <M> 轮)。到顶即停 + 总结当前最好结果
 
 ## 启动后立即注册到 board
 
-每个自驱线程一启动,协调器必须立即把它注册到 board
-(`<project>/.curryflows/board/threads.jsonl`),至少写入:
+每个自驱线程一启动,协调器必须立即把它注册到 board(看板 jsonl 的唯一写入者是 `board.py`,绝不手编):
 
-```json
-{"thread_id": "...", "codex_session": "<rollout 的 session uuid>",
- "budget_tokens": <BUDGET 的硬上限>, "overseer": "attached", "state": "running"}
+```bash
+python3 <skillDir>/scripts/board.py upsert-thread --board ./.curryflows/board \
+  --id <thread-id> --codex-session <rollout 的 session uuid> \
+  --budget-tokens <BUDGET 的硬上限> --state running --branch curryflows/<thread-id>
 ```
 
 注册的目的:`discover-threads.py` 在 tick 第 1 步会把 active codex 会话的 `session_id`
 与 board 的 `codex_session` 集合对账。已注册的会话才不会被标成 `UNREGISTERED`、不会触发
 exit 2、不会被协调器当 runaway 软停(见 `coordinator.md` tick 第 1 步、
-`codex-integration.md`「discover-threads.py」)。`overseer: attached` 表明该自驱线程已挂
-只读审计 + Esc 急停。
+`codex-integration.md`「discover-threads.py」)。线程一经注册(`state=running` + `codex_session`),
+即纳入协调器每-tick 的 reviewer 只读审计 + Esc 急停(见 `coordinator.md`「监督拆分」);**不再用单独的
+`overseer` 标记字段**——审计是每-tick reviewer 的常规职责,而非挂在某条线程上的一次性标记。

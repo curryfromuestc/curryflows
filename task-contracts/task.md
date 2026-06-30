@@ -6,9 +6,19 @@ operator 注入给 codex worker(见 `references/operator-spec.md`、`references/
 
 > 缺任一必填字段,seal-contract 不予封定,worker 不许启动。
 
+## 封定与落点
+
+本文件 copy 到项目里填写;填好并封定后的副本落在 `<project>/.curryflows/contracts/<thread-id>.md`,
+`threads.jsonl` 的 `contract` 字段指向该副本。封定 = 通过 `board.py validate-contract --file <path>`
+(fail-closed:7 个必填字段 `outcome` / `verification` / `constraints` / `boundaries` / `iteration` /
+`budget` / `blocked_stop` 齐且非空)。校验有效则 exit 0;否则非零退出并打印缺失字段列表,seal-contract
+不予封定、worker 不许启动。
+
 ## 必填字段(契约)
 
-- `summary`:这个 worker 要达成什么,一句话可验证的描述。
+以下 7 个字段是 `board.py validate-contract` 的 fail-closed 门(缺任一即不予封定);`summary` 另列,
+见下。
+
 - `outcome`:工作完成时什么应为真(可度量的终态)。
 - `verification`:证明它的**证据面**——独立可跑的测试 / benchmark / GOLD oracle 对照 / 复现步骤 /
   报告产物 / 命令输出。reviewer 用它做独立复验,**不接受 worker 自述**。
@@ -18,9 +28,13 @@ operator 注入给 codex worker(见 `references/operator-spec.md`、`references/
 - `budget`:硬上限(token 或轮次)。到顶 = 停 + 总结进展与 blocker,**不是完成**。
 - `blocked_stop`:在当前限制下无可辩护路径时,worker 何时停下报告、什么能解锁。
 
-这 7 个字段(outcome / verification / constraints / boundaries / iteration / budget / blocked_stop,
-加人类可读的 `summary`)与 `goal-contract.md` 的 /goal 七字段强契约一一对应:**缺任一即 weak goal,
-seal-contract 不予封定、worker 不许启动**。`budget` 与 `blocked_stop` 是防跑飞的两条硬规则。
+这 7 个字段(outcome / verification / constraints / boundaries / iteration / budget / blocked_stop)
+与 `goal-contract.md` 的 /goal 七字段强契约一一对应:**缺任一即 weak goal,seal-contract 不予封定、
+worker 不许启动**(`board.py validate-contract` 校验的正是这 7 个)。`budget` 与 `blocked_stop` 是防
+跑飞的两条硬规则。
+
+- `summary`:这个 worker 要达成什么,一句话**人类可读**的描述。它是给人看的标题,**不进
+  `validate-contract` 的 fail-closed 门**(校验只看上面 7 个);仍建议填,便于看板与决策面识别。
 
 ## 可选字段
 

@@ -79,9 +79,13 @@ td.mono,code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fo
 .empty{color:var(--muted);font-style:italic;padding:8px 0}
 .badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;
 font-weight:600;border:1px solid var(--line);white-space:nowrap}
-.b-running{color:#fff;background:var(--accent);border-color:var(--accent)}
 .b-ready{color:var(--muted)}
-.b-build-done{color:var(--good);border-color:var(--good)}
+.b-running{color:#fff;background:var(--accent);border-color:var(--accent)}
+.b-idle{color:#fff;background:var(--warn);border-color:var(--warn)}
+.b-reviewed{color:var(--ink);border-color:var(--line)}
+.b-committed{color:var(--ink);border-color:var(--line)}
+.b-verified{color:#fff;background:var(--good);border-color:var(--good)}
+.b-session-reaped{color:var(--muted)}
 .b-blocked-human{color:#fff;background:var(--bad);border-color:var(--bad)}
 .b-merged{color:#fff;background:var(--good);border-color:var(--good)}
 .b-rolled-back{color:var(--muted);text-decoration:line-through}
@@ -110,8 +114,9 @@ def render_threads(threads):
     out = ["<h2>线程 (threads)</h2>"]
     if not threads:
         return out + ['<div class="empty">无在途线程</div>']
-    order = {"running": 0, "ready": 1, "build-done": 2, "blocked-human": 3,
-             "merged": 4, "rolled-back": 5}
+    order = {"blocked-human": 0, "running": 1, "idle": 2, "reviewed": 3,
+             "committed": 4, "verified": 5, "session-reaped": 6, "ready": 7,
+             "merged": 8, "rolled-back": 9}
     threads = sorted(threads, key=lambda t: (order.get(t.get("state"), 9),
                                              str(t.get("thread_id"))))
     out.append("<table><thead><tr>"
