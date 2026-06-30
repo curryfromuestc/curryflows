@@ -180,6 +180,11 @@ rollout id。
 
 `start` 操作在拉起 `/loop` 之前做这些一次性事:
 
+> **启动 fail-open(CANON [I],见 `decision-surface.md`)**:`/curryflows <自由任务>`(非字面 `start`)
+> 即视为启动意图。协调器可就第一刀 / 边界提一个非阻断澄清项,但**人类无回答时默认就起 `/loop`**——把
+> 未回答的问题挂到 `decisions.jsonl` 异步裁,**绝不因"没拿到放行"而停在 inline**。启动不是 barrier;
+> 三类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封契约线程,不挡 loop 跑别的就绪线程。
+
 0. **前提**:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow(开局同挂 ultracode + curryflows),
    否则 tick 第一步无法调 `Workflow` 工具跑 `review-panel.js`。
 1. 确保看板目录存在:`mkdir -p ./.curryflows/board`。
@@ -206,6 +211,9 @@ rollout id。
 硬约束:你(主 session)绝不读巨型 transcript/diff、不跑长脚本、不直接操作 tmux——全部外派给
 subagent(一律 opus),你只收回蒸馏裁决。
 
+输出语言:你对我(用户)的每一条摘要 / 叙述 / 追问一律用中文,只有术语 / 标识符 / 命令 / 代码 / 路径
+保留英文;读英文源码或英文文档时也不得漂移成英文叙述。
+
 前提:本会话须已开 ultracode / 已 opt-in 官方 Workflow,才能调 Workflow 工具。
 
 每个 tick 按序执行(审核优先 → 决策 → 操作):
@@ -227,7 +235,9 @@ subagent(一律 opus),你只收回蒸馏裁决。
    scripts/board.py,绝不手编 jsonl。
 3) 操作:派 1 个 operator subagent(opus,可改)执行所有写动作:detach 起 codex /goal(用
    inject-steer.sh 注入封定契约,回传 session-id,长跑线程归 tmux 不随它退出而死)、inject/
-   interrupt 驭在途 worker、reap.sh 回收可回收集。
+   interrupt 驭在途 worker、reap.sh 回收可回收集。codex 启动纪律(CANON [H]):只经 tmux 起
+   (codex-review.sh 有界腿 / `/goal` 自驱)+ subagent 监控交付文件,**禁用 codex 插件 / `codex exec` /
+   companion CLI**(断连 / 网关 502 即零产物)。
 4) 写看板 + 回摘要:用 board.py(upsert-thread / resolve-decision)把变更写回 threads.jsonl /
    decisions.jsonl(board.py 是看板 JSONL 的唯一写入者,绝不手编),append-only 追加 ticks.jsonl
    (看板 HTML 由常驻 serve-board 实时渲染);向我回一条清晰不糊弄的摘要(每线程状态/进展/预算余额、

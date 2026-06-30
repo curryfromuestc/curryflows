@@ -9,6 +9,38 @@ codex TUI 起来,之后所有输入必须走 `scripts/inject-steer.sh`,绝不对
 会静默丢消息。inject-steer.sh 把这套注入流程做成确定性的(见该脚本头注与下文「驱动器契约」)。
 Escape 软停走 `scripts/interrupt-target.sh`,同样不对 live TUI 手搓 raw send-keys。
 
+## CANON [H]:codex 启动纪律(fail-closed,与 /loop 是否在跑解耦)
+
+curryflows 上下文里的**任何** codex 调用——无论协调器是否在 `/loop` 模式、无论是 tick 内的
+operator 动作还是协调器临时起一条有界 review——**只能经 tmux 启动,并由一个 subagent 监控到完成**。
+这条规则与 `/loop` 是否启动**解耦**:即使在尚未起协调器的 inline 场景,起 codex 也照此办理(补上
+"`/loop` 没起 → codex 退回脆弱路径"这个洞)。
+
+**只允许**:`tmux new-session -d` 起普通 shell pane → 在该 pane 上启动 codex 二进制(有界 review 用
+`scripts/codex-review.sh`、自驱 worker 用 `codex … /goal`)→ codex TUI 起来后改走
+`scripts/inject-steer.sh` 注入(CANON [F])。
+
+**禁用**(fail-closed,不得回退):codex 插件命令(`codex:rescue` / `codex:review` /
+`codex:adversarial-review`)、`codex exec`(headless)、以及任何 companion / 远端 CLI 代理路径。理由:
+这些把 codex 进程绑死在一个不可重连的连接 / 远端网关上,SSH 断连或网关故障即整段在途进度丢失、最终
+什么都不返回——**已观测失败**:companion 路由 `…/responses` 返回 502 Bad Gateway、5 次重试全失败、零
+产物。tmux 则相反:tmux server 常驻,断连后 `tmux attach` 即回到原 pane,在途 codex 进程一直存活。
+
+**启动 + 监控同属一个 subagent,绝不刮 TUI**:codex 把成果写到一个声明好的交付文件路径(那是它唯一
+允许的写)。两种模式各自的"谁启动、谁监控":
+
+- **有界 review 腿**:由**一个 subagent** 启动 codex(在其内跑 `codex-review.sh`:`tmux new-session`
+  → `inject-steer.sh` 注入),**该 subagent 启动完即实时监控到完成**——轮询交付文件,字节数 > 0 且连续
+  `STABLE_NEEDED` 次不变才判完成,再把蒸馏结论回传协调器。`codex-review.sh` 已内建这套文件稳定检测
+  (见下),subagent 全程在它的大上下文里盯,结束随它消亡。**这正是全局纪律「codex review 用一个
+  subagent 启动 + 启动后该 subagent 实时监控」的落地。**
+- **自驱 /goal worker**:operator 把它**detach 起在 tmux 里**(长跑、跨天存活,不能让一个 subagent
+  阻塞几天),随后**每 tick 由 reviewer**(`review-panel.js`)读其交付文件 + transcript 判进度 / 完成。
+  监控仍在 subagent(reviewer)里,不在协调器。
+
+协调器(主 session)绝不亲自轮询 pane 或读巨型 transcript——启动与监控都发生在 subagent 里,大上下文
+随它消亡。
+
 ## 两种模式
 
 | 维度 | 有界 review(codex 第二意见腿) | 自驱 worker |
@@ -31,11 +63,13 @@ reviewer 模型集合里才会出现与 worker 不同的模型。这种情形下
 否则审核退化为单模型,跨模型保证作废。协调器必须保证 reviewer 模型集合里存在与 worker 不同的模型。
 真正干活的默认 worker 用自驱 `/goal` 并挂监督。
 
-## 为什么不用 codex exec(headless)
+## 为什么不用 codex exec / 插件 / companion(CANON [H] 的理由)
 
 `codex exec` 是 headless 模式:它不在一个可重连的终端会话里跑,进程与发起它的连接绑定。
 本机是通过 SSH 操作的,SSH 断连会带走 headless 进程,在途进度(in-flight progress)随之
-丢失,无法重连恢复。
+丢失,无法重连恢复。codex **插件命令**(`codex:rescue` 等)与 **companion CLI** 更糟:它们在
+headless 之上再加一跳远端网关,网关 502 / 限流即整段失败、零产物(已观测,见 CANON [H])。
+这三条路径都不满足 curryflows 的"断连可重连 + 可被 subagent 监控"要求,故 fail-closed 禁用。
 
 走 tmux 则不同:codex TUI 跑在一个 detached tmux 会话里,tmux server 是常驻进程,SSH
 断连不影响它;重连后 `tmux attach` 即可回到原 pane,在途的 codex 进程一直存活。这是

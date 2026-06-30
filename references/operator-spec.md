@@ -49,8 +49,11 @@ session-id 回传给协调器,协调器写回看板(见 `goal-contract.md`「启
 填好后由 `seal-contract` 封存,见 `goal-contract.md` / CANON [D]);`threads.jsonl` 的 `contract`
 字段指向它。
 
-不用 `codex exec`(headless):SSH 断连会带走 headless 进程,在途进度丢失、无法重连。走 tmux 才能
-断连重连不丢进度(见 `codex-integration.md`)。
+**codex 启动纪律(CANON [H],fail-closed)**:上面这条 tmux 路径是 operator 起 codex 的**唯一**允许方式。
+**禁用** `codex exec`(headless,SSH 断连即带走进程、在途进度丢失、无法重连)、codex 插件命令
+(`codex:rescue` / `codex:review` / `codex:adversarial-review`)、以及任何 companion / 远端 CLI 代理
+(在 headless 之上再加一跳网关,502 / 限流即整段失败、零产物——已观测)。只有走 tmux 才能断连重连不丢
+进度、且可被 subagent 监控(见 `codex-integration.md`)。
 
 ### 2) 驭在途 worker
 

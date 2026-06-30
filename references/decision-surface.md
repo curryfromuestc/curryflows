@@ -25,6 +25,17 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 
 ---
 
+## 1b. CANON [I]:启动 fail-open(no-answer → 默认起 /loop)
+
+barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curryflows 主动就"要不要起协调器 / 要不要把某块可执行长跑活交给 worker"问人类、而人类在该轮**未回答**时:
+
+- **默认动作 = 起 `/loop`**:协调器进入 tick 循环——对**契约可自动封定且过 `board.py validate-contract`** 的可执行有界 / 长跑活,seal 后在 tmux 起 worker(CANON [H]);对需要人类封契约的活(seal-contract 前置未过)以及那条未回答的问题,**原样 post 到 `decisions.jsonl`** 等人类异步裁、线程置 `blocked-human`。**绝不静默退回 inline、也不停下干等**(无可起的就绪线程时,loop 按常规 park 等事件,而非退回 inline)——这与"前进不等人"一致,启动本身不是 barrier。
+- **例外(仍 fail-closed)**:`merge-main` / `outward-irreversible` / `model-divergence` 三类硬闸,以及 `seal-contract` 前置,仍各自挡住其**具体的不可逆动作 / 未封契约的那条线程**;但只挡那一个动作 / 那一条线程,**不挡 `/loop` 跑别的就绪线程**。即:无回答时,需要人类封契约或人类确认不可逆动作的那部分等着,其余可执行活照起。
+
+实务:`/curryflows <自由任务>`(非字面 `start` 子命令)即视为**启动意图**;协调器可就边界 / 第一刀提一个非阻断的澄清项,但**得不到回答时按本规则默认起 loop**,不得因"没拿到放行"而停在 inline。
+
+---
+
 ## 2. 纪律(什么入队、什么不入队)
 
 - **agreement + 契约可判 → 自动处理,不入队。** 这是 curryflows 把人类决策队列压到极少数的根本机制(reviewer 收敛规则见 `reviewer-spec.md`)。
