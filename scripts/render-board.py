@@ -141,25 +141,47 @@ def render_threads(threads):
 def render_decisions(decisions):
     out = ["<h2>人类决策队列 (decisions)</h2>"]
     open_items = [d for d in decisions if d.get("status") == "open"]
+    done_items = [d for d in decisions
+                  if d.get("status") in ("resolved", "rejected")]
     if not open_items:
-        return out + ['<div class="empty">无待决策项</div>']
-    out.append("<table><thead><tr>"
-               "<th>id</th><th>barrier</th><th>thread</th>"
-               "<th>summary</th><th>recommendation</th><th>evidence</th>"
-               "</tr></thead><tbody>")
-    for d in open_items:
-        ev = d.get("evidence")
-        ev_html = f"<code>{esc(ev)}</code>" if ev else "-"
-        out.append(
-            "<tr>"
-            f"<td class='mono'>{esc(d.get('id'))}</td>"
-            f"<td>{_bar_badge(d.get('barrier'))}</td>"
-            f"<td class='mono'>{esc(d.get('thread'))}</td>"
-            f"<td>{esc(d.get('summary'))}</td>"
-            f"<td>{esc(d.get('recommendation'))}</td>"
-            f"<td class='ev'>{ev_html}</td>"
-            "</tr>")
-    out.append("</tbody></table>")
+        out.append('<div class="empty">无待决策项</div>')
+    else:
+        out.append("<table><thead><tr>"
+                   "<th>id</th><th>barrier</th><th>thread</th>"
+                   "<th>summary</th><th>recommendation</th><th>evidence</th>"
+                   "</tr></thead><tbody>")
+        for d in open_items:
+            ev = d.get("evidence")
+            ev_html = f"<code>{esc(ev)}</code>" if ev else "-"
+            out.append(
+                "<tr>"
+                f"<td class='mono'>{esc(d.get('id'))}</td>"
+                f"<td>{_bar_badge(d.get('barrier'))}</td>"
+                f"<td class='mono'>{esc(d.get('thread'))}</td>"
+                f"<td>{esc(d.get('summary'))}</td>"
+                f"<td>{esc(d.get('recommendation'))}</td>"
+                f"<td class='ev'>{ev_html}</td>"
+                "</tr>")
+        out.append("</tbody></table>")
+    # resolved / rejected history -- a decision that was made must stay visible,
+    # not vanish from the board once it leaves the open queue.
+    if done_items:
+        out.append("<h3>已裁决 (resolved / rejected)</h3>")
+        out.append("<table><thead><tr>"
+                   "<th>id</th><th>barrier</th><th>thread</th>"
+                   "<th>status</th><th>summary</th><th>resolution</th>"
+                   "</tr></thead><tbody>")
+        for d in done_items:
+            out.append(
+                "<tr>"
+                f"<td class='mono'>{esc(d.get('id'))}</td>"
+                f"<td>{_bar_badge(d.get('barrier'))}</td>"
+                f"<td class='mono'>{esc(d.get('thread'))}</td>"
+                f"<td>{esc(d.get('status'))}</td>"
+                f"<td>{esc(d.get('summary'))}</td>"
+                f"<td>{esc(d.get('resolution'))}</td>"
+                "</tr>")
+        out.append("</tbody></table>")
     return out
 
 

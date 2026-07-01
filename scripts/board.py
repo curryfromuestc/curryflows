@@ -2,13 +2,14 @@
 """curryflows: the sole writer of the board JSONL files.
 
 The coordinator's own context is unreliable (it parks, compacts, spans wake-ups),
-so the durable board under <board>/ is the source of truth. Two files are written
+so the durable board under <board>/ is the source of truth. Three files are written
 exclusively through this CLI:
 
   <board>/threads.jsonl    -- one record per in-flight thread (state machine)
   <board>/decisions.jsonl  -- the human-decision queue (barriers)
+  <board>/ticks.jsonl      -- append-only durable tick history (record-tick)
 
-NEVER hand-edit threads.jsonl / decisions.jsonl. A hand-edit easily corrupts a
+NEVER hand-edit threads.jsonl / decisions.jsonl / ticks.jsonl. A hand-edit easily corrupts a
 line, and render-board.py silently skips malformed lines -- so a corrupted line
 silently drops a thread's state. board.py is the single writer: every write is
 atomic (same-dir temp file + os.replace) and every illegal enum / missing
@@ -38,8 +39,8 @@ Authoritative thread state machine (CANON [A]):
 Decision barriers (CANON [E]): seal-contract, merge-main, outward-irreversible,
 model-divergence.
 
-Subcommands: upsert-thread, post-decision, resolve-decision, list-threads,
-list-decisions, validate-contract. Usage errors exit 64.
+Subcommands: upsert-thread, post-decision, resolve-decision, record-tick,
+list-threads, list-decisions, validate-contract. Usage errors exit 64.
 """
 import argparse
 import json
@@ -135,6 +136,10 @@ def threads_path(board):
 
 def decisions_path(board):
     return os.path.join(board, "decisions.jsonl")
+
+
+def ticks_path(board):
+    return os.path.join(board, "ticks.jsonl")
 
 
 def fail(msg, code=1):
@@ -333,6 +338,39 @@ def cmd_validate_contract(args):
 
 
 # --------------------------------------------------------------------------- #
+# record-tick (append-only durable tick history)
+# --------------------------------------------------------------------------- #
+def cmd_record_tick(args):
+    """Append one tick record to ticks.jsonl. The coordinator prepares the tick
+    JSON as a data file (allowed under CANON [J]); board.py is still the sole
+    writer -- it validates required fields and appends atomically. This is the
+    ONLY sanctioned way to write ticks.jsonl (never hand-append / `>` it)."""
+    try:
+        with open(args.file, "r", errors="strict") as f:
+            rec = json.load(f)
+    except FileNotFoundError:
+        return fail(f"tick file not found: {args.file}", 64)
+    except Exception as exc:
+        return fail(f"cannot parse tick JSON {args.file}: {exc}", 64)
+    if not isinstance(rec, dict):
+        return fail("tick JSON must be a JSON object", 64)
+    if not isinstance(rec.get("tick"), int) or isinstance(rec.get("tick"), bool):
+        return fail("tick record requires integer field 'tick'")
+    summ = rec.get("summary")
+    if not isinstance(summ, str) or not summ.strip():
+        return fail("tick record requires non-empty string field 'summary'")
+    rec.setdefault("reviews", [])
+    rec.setdefault("decisions_made", [])
+    rec.setdefault("operator", {})
+    if not rec.get("ts"):
+        rec["ts"] = now_iso()
+    rows = read_jsonl_strict(ticks_path(args.board))
+    rows.append(rec)
+    write_jsonl_atomic(ticks_path(args.board), rows)
+    print(json.dumps(rec, ensure_ascii=False))
+
+
+# --------------------------------------------------------------------------- #
 # argparse wiring
 # --------------------------------------------------------------------------- #
 def build_parser():
@@ -376,6 +414,14 @@ def build_parser():
     p.add_argument("--status", default="resolved",
                    choices=("resolved", "rejected"))
     p.set_defaults(func=cmd_resolve_decision)
+
+    p = sub.add_parser("record-tick",
+                       help="append a tick record to ticks.jsonl (durable history)")
+    add_board(p)
+    p.add_argument("--file", required=True,
+                   help="JSON file with the tick record: "
+                        "{tick:int, summary:str, reviews?, decisions_made?, operator?, ts?}")
+    p.set_defaults(func=cmd_record_tick)
 
     p = sub.add_parser("list-threads", help="dump threads.jsonl")
     add_board(p)

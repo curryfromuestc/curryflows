@@ -88,6 +88,7 @@ ss -ltnp | grep 8787                                                            
 - `post-decision --id <did> --barrier B --thread T --summary S --recommendation R --evidence PATH [--divergence D] [--options "a|b|c"]`
   ——追加决策(`status=open`,`resolution=null`);校验 `barrier` ∈ `{seal-contract, merge-main, outward-irreversible, model-divergence}`;`recommendation` 与 `evidence` 必须非空。
 - `resolve-decision --id <did> --resolution TEXT [--status resolved|rejected]`——按 id 更新决策。
+- `record-tick --board <dir> --file <tick.json>`——把一条 tick 记录 append 到 `ticks.jsonl`(durable 历史)。`tick.json` 是协调器备好的**数据文件**(`{tick:int, summary:str, reviews?, decisions_made?, operator?, ts?}`;`tick`/`summary` 必填非空,fail-closed);board.py 仍是唯一写入者、原子 append。**这是写 `ticks.jsonl` 的唯一正道**(绝不手 append / `>`)。
 - `list-threads` / `list-decisions [--open]`——只读 JSONL dump(协调器廉价读回状态)。
 - `validate-contract --file PATH`——fail-closed seal 前置(见上「文件布局」);有效 exit 0,否则非零并打印缺失字段列表。
 
@@ -143,6 +144,10 @@ ss -ltnp | grep 8787                                                            
  "operator": {launched, steered, reaped, failures},
  "summary": "<本 tick 回给主 session 的那条摘要原文>"}
 ```
+
+**写入经 `board.py record-tick --file <tick.json>`(唯一正道,fail-closed:`tick` 为 int + `summary` 非空)**:
+协调器每 tick 末备好这份 JSON 数据文件(写数据文件不违反 CANON [J]),再调 board.py 原子 append;**绝不手
+append / `>` `ticks.jsonl`**(否则 tick 历史要么写坏、要么因"禁手编"而永远空)。
 
 ## 每 tick 摘要 schema(回主 session 的那条)
 
