@@ -2,8 +2,8 @@
 
 一句话定位:curryflows 把人类 review 从构建关键路径上解耦——一个 `/loop` 协调器以"审核优先"
 推进多个在 tmux 里长跑的 codex /goal worker,每个产物经跨模型 review(worker=codex、
-reviewer=Claude)+ 反捏造审核守住,人类异步看蒸馏后的决策面,只有合 main、对外不可逆、跨模型
-真分歧三类 barrier 才升人类,**默认不阻断推进**。
+reviewer=Claude)+ 反捏造审核守住,人类异步看蒸馏后的决策面,只有对外不可逆、跨模型真分歧才升人类
+(合 main 验证过即自动合,见 CANON [L]),**默认不阻断推进**。
 
 > 在 `SKILL.md` 的 references 索引中,本文件登记为:`architecture.md` — 三层模型、审核优先
 > tick、跨模型 review、barrier、subagent 边界。
@@ -114,11 +114,12 @@ worker=codex `/goal`、reviewer=Claude opus,天生跨模型。但若某线程的
 curryflows 把"人类必须确认"收敛成极少数 barrier,其余靠"疑问→就地跨模型 review→分歧 settle
 不了才升"自动消化。人类在 `dashboard.html` / `decisions.jsonl` 上异步处理,**前进不等人**。
 
-硬闸:**合 main**、**对外不可逆**、**跨模型真分歧**;另有 **seal-contract** 在开头封定 worker 的
-目标契约(plan-tree 交叉评审 + 人封)。barrier 与决策项格式见 `decision-surface.md`。
+硬闸:**对外不可逆**、**跨模型真分歧**(**合 main 已自动化——`verified` 即自动合,仅验证失败才升,
+CANON [L]**);另有 **seal-contract** 在开头封定 worker 的目标契约(plan-tree 交叉评审 + 人封)。barrier
+与决策项格式见 `decision-surface.md`。
 
 **启动不是 barrier(CANON [I])**:协调器主动问人类而无回答时,默认**起 `/loop`** 推进可执行的活、把
-问题挂到决策面异步裁,绝不静默退回 inline。上面三类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封
+问题挂到决策面异步裁,绝不静默退回 inline。上面两类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封
 契约线程,不挡 loop 跑别的就绪线程。见 `decision-surface.md` §1b。
 
 **决策面无弹窗(CANON [K])**:协调器 /loop 全程**绝不 `AskUserQuestion`**;barrier 与一切需人判项只经
@@ -131,7 +132,8 @@ curryflows 把"人类必须确认"收敛成极少数 barrier,其余靠"疑问→
 
 - 每个长跑 worker = **独立分支 + 独立 worktree**(默认 base `~/.cache/curryflows/worktrees/<project>/<thread-id>`,可配)。
 - worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。
-- 合 main 在 barrier 处**串行**:先 rebase 到最新 main、重跑验证;冲突 settle 不了升决策项。
+- 合 main **自动化**(CANON [L]):`verified` 后协调器串行(一次一个)rebase 最新 main + 重跑验证,
+  **绿则自动合(→ merged)**,仅 rebase 冲突 / 重跑验证失败才升决策项。
 - **用完即回收**:operator 每 tick 把跑完 / 孤儿的 tmux 会话、codex 线程、worktree 直接回收
   (`reap.sh`:`tmux kill-session` + `git worktree remove/prune` + 删 curryflows 分支),这是硬职责,不指望收尾钩子。
   `discover-threads.py` 双向对账给出可回收集。

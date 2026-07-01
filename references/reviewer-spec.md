@@ -68,7 +68,7 @@ BOUNDARIES / ITERATION / BUDGET / BLOCKED_STOP)审:
 - **越界**:是否改了 BOUNDARIES 之外的文件。
 - **不变量**:是否破坏项目已有接口 / 行为 / 关键路径。
 - **预算 / 停点**:是否到 BUDGET 仍不停、是否把"到顶"当"完成";BLOCKED_STOP 触发时是否如实停并报告。
-- **barrier**:是否撞到合 main / 对外不可逆 / 跨模型真分歧。
+- **barrier**:是否撞到对外不可逆 / 跨模型真分歧(合 main 已自动化——reviewer 只报 `verified` / merge-ready,不作人类 barrier,见 CANON [L])。
 
 ### 3) 独立复验(不信 worker 自述)
 

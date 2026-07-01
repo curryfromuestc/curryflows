@@ -12,14 +12,14 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 
 1. **分歧**(cross-review 对照 ground truth 裁不动的真分歧)。
 2. **契约缺口**(契约无法判定该走哪条路)。
-3. **不可逆**(合 main、对外不可逆这类硬闸)。
+3. **不可逆**(对外不可逆这类硬闸;**合 main 已不在此列——`verified` 即自动合,见 CANON [L]**)。
 
 对应的四个 barrier 取值:
 
 | barrier | 含义 | 触发处 |
 |---|---|---|
 | `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头** | 起 worker 之前(封定目标契约) |
-| `merge-main` | 合 main 硬闸:rebase 最新 main + 重跑验证,冲突 settle 不了升此项 | 协调器合 main barrier |
+| `merge-main` | **非人类 barrier(CANON [L])**:`verified` 即自动 rebase + 重跑验证 + 合;仅 rebase 冲突 / 重跑验证失败才 post 此项 | 协调器自动合 main 失败时 |
 | `outward-irreversible` | 对外不可逆操作硬闸 | 协调器 / worker 遇不可逆动作 |
 | `model-divergence` | 跨模型真分歧 / 契约缺口,reviewer escalate、协调器裁不动 | reviewer 裁决 → 协调器收敛 |
 
@@ -30,7 +30,7 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curryflows 主动就"要不要起协调器 / 要不要把某块可执行长跑活交给 worker"问人类、而人类在该轮**未回答**时:
 
 - **默认动作 = 起 `/loop`**:协调器进入 tick 循环——对**契约可自动封定且过 `board.py validate-contract`** 的可执行有界 / 长跑活,seal 后在 tmux 起 worker(CANON [H]);对需要人类封契约的活(seal-contract 前置未过)以及那条未回答的问题,**原样 post 到 `decisions.jsonl`** 等人类异步裁、线程置 `blocked-human`。**绝不静默退回 inline、也不停下干等**(无可起的就绪线程时,loop 按常规 park 等事件,而非退回 inline)——这与"前进不等人"一致,启动本身不是 barrier。
-- **例外(仍 fail-closed)**:`merge-main` / `outward-irreversible` / `model-divergence` 三类硬闸,以及 `seal-contract` 前置,仍各自挡住其**具体的不可逆动作 / 未封契约的那条线程**;但只挡那一个动作 / 那一条线程,**不挡 `/loop` 跑别的就绪线程**。即:无回答时,需要人类封契约或人类确认不可逆动作的那部分等着,其余可执行活照起。
+- **例外(仍 fail-closed)**:`outward-irreversible` / `model-divergence` 两类硬闸,以及 `seal-contract` 前置(合 main 已自动化,仅验证失败才升,见 CANON [L]),仍各自挡住其**具体的不可逆动作 / 未封契约的那条线程**;但只挡那一个动作 / 那一条线程,**不挡 `/loop` 跑别的就绪线程**。即:无回答时,需要人类封契约或人类确认不可逆动作的那部分等着,其余可执行活照起。
 
 实务:`/curryflows <自由任务>`(非字面 `start` 子命令)即视为**启动意图**;协调器可就边界 / 第一刀 **post 一个非阻断决策项**(进 `decisions.jsonl`,**绝不 `AskUserQuestion`**,见 CANON [K]),但**得不到回答时按本规则默认起 loop**,不得因"没拿到放行"而停在 inline。
 
@@ -43,11 +43,26 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 每 tick 对每条待推进项判一次,二选一:
 
 - **无依赖 / 无需真决策**——选下一片 / 下一批 worker、推进节奏、并行编排、契约可自动封定的——**直接推进,不问不停**:按 plan / 北极星自主选下一波,seal(过 `validate-contract`)+ 起 worker(fail-open,CANON [I])。
-- **有真决策**——合 main、对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human`,摘要给指针;**只 hold 该线程,其余线程照推**。
+- **有真决策**——对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择(**合 main 已自动化,仅验证失败才升,见 CANON [L]**)——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human`,摘要给指针;**只 hold 该线程,其余线程照推**。
 
 **混合波**:把可推进的部分立刻起,只把需决策的部分入队——**绝不因为一波里有一项要决策就把整波停下来问**(已观测反例:把「Merge(真 barrier)」和「Next slice(无依赖)」捆进同一次 AskUserQuestion,整波停等)。若某 tick 确实无任何可推进项(全卡在 open 决策上),则 **park**(Monitor + ScheduleWakeup)等人类回复事件,**而非弹窗**。
 
 人类登录时看决策面、`board.py resolve-decision` 回写(或口头让协调器落地);协调器下个 tick 落地已裁决项。**平时一直推进,不等人。** 本规则禁掉阻塞机制并强化 CANON [I]——CANON [I] 里的"问",从不是弹窗,而是异步决策项。
+
+---
+
+## 1d. CANON [L]:合 main 自动化(verified → 自动合;只有验证失败才升人类)
+
+**`merge-main` 不是人类决策 barrier。** worker 到 `verified`(review 已 pass + 契约级独立复跑通过、非 worker 自报)后,协调器**自动**合 main、无需人类:operator 串行地(一次一个,避免 main 竞态)rebase 到最新 main → 重跑验证 → **绿则 `git merge`(state→merged)** → 分阶段 reap。happy path 零决策、零弹窗。
+
+**只有两种失败才 escalate**(post 一个 `merge-main` 决策项,async,hold 该线程、其余照推):
+
+1. rebase 冲突 settle 不了;
+2. rebase 后重跑验证失败(即"验证有问题")。
+
+合 main 是**本地 merge**(可 `git revert`,分支保留到 `merged`),安全性由跨模型 review + 契约级独立复跑兜住,不靠人类签字。**推送到对外 / 共享远端仍属 `outward-irreversible`,仍是人类 barrier**(合本地 main ≠ 对外)。
+
+于是运行期真正升人类的 barrier 收敛为 **`outward-irreversible` + `model-divergence`**(+ `seal-contract` 前置当契约需人定、+ `merge-main` 仅上面两种失败时)。自动合入的事实进每-tick 摘要;可选 post 一个 `status=resolved` 的 merge 记录项供人类事后可见,但**不阻断**。
 
 ---
 
@@ -108,7 +123,7 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 5. 人类只在这条队列上异步工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选;裁决结果**通过 `board.py resolve-decision --id <did> --resolution <text> [--status resolved|rejected]` 写回**——`board.py` 是 `decisions.jsonl` 的唯一写入者,**绝不手编 `decisions.jsonl`**(手编易写坏行,而 `render-board.py` 对坏行静默跳过会无声丢决策)——**前进不等人**。
 6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 在下个 tick 落地对应 thread(落地两条路见第 5 节)。
 
-merge-main 与 outward-irreversible 两类硬闸不经 reviewer 裁决,由协调器在合 main barrier / 遇不可逆动作时直接组装决策项 post 到同一 `decisions.jsonl`;seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
+`outward-irreversible` 硬闸不经 reviewer 裁决,由协调器遇不可逆动作时直接组装决策项 post 到 `decisions.jsonl`;`merge-main` 仅在自动合失败(rebase 冲突 / 重跑验证失败)时才 post(见 CANON [L],happy path 不入队);seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
 
 ---
 

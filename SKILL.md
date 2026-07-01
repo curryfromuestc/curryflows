@@ -8,8 +8,8 @@ description: >-
   推进多个在 tmux 里长跑的 codex /goal worker:每个 tick 调官方 Workflow(workflows/review-panel.js)
   跑 review 面板审产物 + 对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux
   (起/驭/回收 codex)。worker 是 codex、reviewer 是 Claude,天然跨模型;裁决只回一条清晰摘要
-  给主 session,完整证据落 durable 看板,人类异步看、异步决策,默认不阻断推进——只在合 main、
-  对外不可逆、跨模型真分歧三种 barrier 才升人类。自驱 codex /goal 挂强目标契约(budget +
+  给主 session,完整证据落 durable 看板,人类异步看、异步决策,默认不阻断推进——合 main 验证过即自动合、
+  只在对外不可逆、跨模型真分歧才升人类。自驱 codex /goal 挂强目标契约(budget +
   blocked-stop)+ 只读审计 + Esc 急停,防跑飞。统一资源发现把所有在途 codex 会话 + worktree
   对账,用完即回收,杜绝 runaway。触发于:"起 curryflows 协调器"、"用 curryflows 跑并发开发"、
   "做带跨模型评审的并发开发"、"监督 codex /goal 别跑飞"、"排查 runaway codex 会话"、
@@ -30,7 +30,7 @@ requires:
 把人类 review 从构建关键路径上解耦的通用工作流协调器。一个 `/loop` 协调器并发推进多个长跑
 worker;解耦期的正确性由跨模型 review(worker=codex,reviewer=Claude)+ 反捏造审核守住。
 **每个 tick 都吐出一条清晰摘要回主 session,人类有空才看、才决策,而决策默认不阻断推进——只有
-合 main、对外不可逆、跨模型真分歧三种 barrier 才停。**
+对外不可逆、跨模型真分歧才停(合 main 验证过即自动合,见 CANON [L])。**
 
 **输出语言(硬规则)**:本 skill 运行期间,协调器对用户(主 session)的一切 narration、每-tick 摘要、
 决策说明、追问**一律用中文**;仅技术术语 / 标识符 / 命令 / 代码 / 文件路径保留英文原文。即使在读英文源码、
@@ -160,26 +160,27 @@ operator 执行 `scripts/reap.sh`。详见 `references/operator-spec.md`。
 ## 并发隔离
 
 每个长跑 worker = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
-base 可配)。worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。合 main 在 barrier
-处串行:先 rebase 到最新 main、重跑验证,冲突 settle 不了升决策项。孤儿 worktree 并入资源发现对账
+base 可配)。worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。合 main **自动化(CANON [L])**:
+`verified` 后串行 rebase 最新 main + 重跑验证,**绿则自动合**,仅冲突 / 验证失败才升决策项。孤儿 worktree 并入资源发现对账
 + 回收。
 
 ## 人类决策(barrier,异步、非阻断)
 
-默认不阻塞:疑问 → 就地跨模型 review → 一致且依据可判就自动处理。只有三类硬闸入队:**合 main**、
-**对外不可逆**、**跨模型真分歧**(另有 **seal-contract** 在开头封定 worker 的目标契约)。人类在
+默认不阻塞:疑问 → 就地跨模型 review → 一致且依据可判就自动处理。只有**两类**硬闸入队:
+**对外不可逆**、**跨模型真分歧**(合 main 已自动化,见 CANON [L];另有 **seal-contract** 在开头封定 worker 的目标契约)。人类在
 `dashboard.html` / `decisions.jsonl` 上异步处理,**前进不等人**。详见 `references/decision-surface.md`。
 
 **启动是 fail-open(CANON [I])**:当 curryflows 主动就"要不要起协调器 / 要不要把可执行长跑活交给
 worker"问人类、而人类**未回答**时,默认动作是**起 `/loop`** 推进可执行的活、把未回答的问题挂到
-`decisions.jsonl` 异步裁——**绝不静默退回 inline、也不停下干等**。启动决策不是 barrier;上面三类硬闸
+`decisions.jsonl` 异步裁——**绝不静默退回 inline、也不停下干等**。启动决策不是 barrier;上面两类硬闸
 + seal-contract 仍各自只挡其不可逆动作 / 未封契约的那条线程,不挡 loop 跑别的就绪线程。
 `/curryflows <自由任务>`(非字面 `start`)即视为启动意图。详见 `references/decision-surface.md`。
 
 **协调器绝不阻塞询问(CANON [K])**:/loop 全程**零 `AskUserQuestion`**。无依赖 / 无需真决策的下一波
-(选下一片 / 下一批、推进节奏、并行编排)**直接推进,不问不停**;需人判的(合 main、跨模型真分歧、外部
-阻塞、需人定的 ABI / 编码)一律 `board.py post-decision` 进 `decisions.jsonl` + 摘要给指针,**只 hold 该
-线程、其余照推**;混合波推进可推进部分、只入队需决策部分。人类登录看决策面异步裁——**前进不等人**。
+(选下一片 / 下一批、推进节奏、并行编排)**直接推进,不问不停**;需人判的(对外不可逆、跨模型真分歧、
+外部阻塞、需人定的 ABI / 编码;**合 main 已自动化,见 CANON [L]**)一律 `board.py post-decision` 进
+`decisions.jsonl` + 摘要给指针,**只 hold 该线程、其余照推**;混合波推进可推进部分、只入队需决策部分。
+人类登录看决策面异步裁——**前进不等人**。
 
 ## 自驱 codex 的监督
 

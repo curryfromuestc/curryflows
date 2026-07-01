@@ -91,8 +91,9 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
   ——outcome、verification、constraints、boundaries、iteration、budget、blocked_stop;校验不过不得起
   worker)。
 
-barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的三类——合 main(串行:先 rebase 最新
-main + 重跑验证)、对外不可逆、model-divergence;另有 seal-contract 在开头封定契约。**决策默认不阻断**:
+barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的**两类**——对外不可逆、model-divergence;
+**合 main 已自动化(CANON [L]:`verified` 即自动 rebase + 重跑验证 + 合,仅 rebase 冲突 / 重跑验证失败才升)**;
+另有 seal-contract 在开头封定契约。**决策默认不阻断**:
 就绪线程照推,人类决策异步进行。**绝不 `AskUserQuestion`(CANON [K])**:需人判的只 post-decision 进
 `decisions.jsonl` + 摘要给指针,只 hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分;全卡住
 才 park 等事件,而非弹窗。
@@ -158,7 +159,9 @@ ready → running → idle → reviewed → committed → verified → session-r
   执行 `git commit`(见 `operator-spec.md`「commit worker 工作到自有分支」)。
 - `idle → reviewed`(审计)与 `committed → verified`(在 committed 分支 worktree 上独立复跑):**reviewer**
   (见 `reviewer-spec.md`)。
-- `→ blocked-human`、`→ merged` / `→ rolled-back`、各状态置位写看板:**协调器**(决策 + `board.py`)。
+- `verified → merged`:**自动合(CANON [L])**——operator 串行 rebase 最新 main + 重跑验证 + `git merge`,
+  协调器置 `merged`(仅 rebase 冲突 / 重跑验证失败时才改 post `merge-main` 决策项 + 置 `blocked-human`)。
+- `→ blocked-human` / `→ rolled-back`、各状态置位写看板:**协调器**(决策 + `board.py`)。
 
 ### 分阶段 reap
 
@@ -191,7 +194,7 @@ rollout id。
 > **启动 fail-open(CANON [I],见 `decision-surface.md`)**:`/curryflows <自由任务>`(非字面 `start`)
 > 即视为启动意图。协调器可就第一刀 / 边界提一个非阻断澄清项,但**人类无回答时默认就起 `/loop`**——把
 > 未回答的问题挂到 `decisions.jsonl` 异步裁,**绝不因"没拿到放行"而停在 inline**。启动不是 barrier;
-> 三类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封契约线程,不挡 loop 跑别的就绪线程。
+> 两类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封契约线程,不挡 loop 跑别的就绪线程(合 main 已自动化,见 CANON [L])。
 
 0. **前提**:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow(开局同挂 ultracode + curryflows),
    否则 tick 第一步无法调 `Workflow` 工具跑 `review-panel.js`。
@@ -264,6 +267,7 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
 5) park 或 continue:有就绪事项就继续;否则 arm Monitor 等线程完成/人类回复,ScheduleWakeup
    1200-1800s 后再唤醒,然后停下省上下文。
 
-硬闸:运行期三类(默认不阻断推进,人类异步处理)——合 main(串行 barrier:先 rebase 最新 main +
-重跑验证)、对外不可逆、model-divergence;另有 seal-contract 在开头封定 worker 目标契约(barrier 取值共 4 个)。
+硬闸:运行期**两类**(默认不阻断推进,人类异步处理)——对外不可逆、model-divergence;**合 main 自动化
+(CANON [L]:`verified` 即 operator 串行 rebase + 重跑验证 + 合,仅冲突 / 重跑验证失败才升)**;另有
+seal-contract 在开头封定 worker 目标契约(barrier 取值共 4 个)。
 ```

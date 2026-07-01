@@ -6,8 +6,8 @@
 Workflow 跑 `workflows/review-panel.js`(跨模型多 lens reviewer + arbiter 收敛,opus、只读)审产物 +
 对账资源,协调器据裁决决策,再派一个 operator subagent 去操作 tmux(起 / 驭 / 回收 codex)。worker
 是 codex、reviewer 是 Claude,**天然跨模型**;裁决只回
-一条清晰摘要给主 session,完整证据落 durable 看板,**人类异步看、异步决策,默认不阻断推进**——只在
-合 main、对外不可逆、跨模型真分歧三种 barrier 才升人类。
+一条清晰摘要给主 session,完整证据落 durable 看板,**人类异步看、异步决策,默认不阻断推进**——合 main
+验证过即自动合,只在对外不可逆、跨模型真分歧才升人类。
 
 唯一硬约束:**协调器(主 session)上下文绝不被巨型 transcript / diff 撑爆**——重活全在 Workflow /
 subagent 的隔离上下文里完成,其大上下文随之消亡,协调器只收蒸馏结论。

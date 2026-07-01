@@ -79,6 +79,24 @@ commit 完把 `{thread_id, branch, commit}` 回传;协调器用 `board.py upsert
 这一步是 reviewer 在 `committed → verified` 做独立复跑、以及分阶段 reap(CANON [B])的前提——没有 commit
 就没有可供独立复验的稳定快照。
 
+### 3b) 自动合 main(`verified` → `merged`,CANON [L])
+
+线程到 `verified`(reviewer 独立复跑通过)后,协调器把**自动合 main**交给 operator——**无需人类决策**
+(CANON [L])。**串行**(一次一个,避免 main 竞态):
+
+```bash
+git -C <worktree> rebase <main-ref>                          # rebase 到最新 main
+# 重跑该线程契约的 VERIFICATION(独立复跑);绿才继续
+git -C <main-checkout> merge --no-ff curryflows/<thread-id>  # 合入本地 main(可 revert)
+```
+
+- **绿则合**:rebase 干净 + 重跑验证通过 → `git merge` → 回传;协调器置 `state=merged`(随后分阶段 reap
+  worktree + 分支)。
+- **失败才升**:rebase 冲突 settle 不了,或 rebase 后重跑验证失败 → **不合**,回传失败原因;协调器 post 一个
+  `merge-main` 决策项(async)+ 置 `blocked-human`,**其余线程照推**。
+- 合的是**本地 main**(可 `git revert`);**推送到对外 / 共享远端不在此列——那属 `outward-irreversible`,
+  仍是人类 barrier**。回传:`merged` 数组 `{thread_id, branch, merged_into, commit}`,失败进 `failures`。
+
 ### 4) 回收资源(用完即删,硬职责)
 
 对协调器标记的可回收集(跑完 / 孤儿,由 reviewer 经 `discover-threads.py` 对账得出),**逐个资源**
@@ -136,6 +154,7 @@ operator 回一个对象给协调器(协调器据此写回看板):
 | `launched` | array | 本 tick 起的 worker:`{thread_id, codex_session, branch, worktree, tmux_session}` |
 | `steered` | array | 本 tick 驭的 worker:`{thread_id, action: inject\|interrupt, ref}` |
 | `committed` | array | 本 tick commit 的线程:`{thread_id, branch, commit}` |
+| `merged` | array | 本 tick 自动合入 main 的线程(CANON [L]):`{thread_id, branch, merged_into, commit}` |
 | `reaped` | array | 本 tick 回收的资源:`{kind: session\|worktree\|branch, ref, exit_code}` |
 | `failures` | array | 失败的动作 + 退出码 + 原因(**如实回报,不绿洗**) |
 
