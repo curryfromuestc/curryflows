@@ -77,6 +77,10 @@ ss -ltnp | grep 8787                                                            
 手编易写坏行,而 `render-board.py` 对坏行**静默跳过**,会无声丢状态(看板与真相脱节,且无报错)。
 所有写操作原子(同目录 temp 文件 + `os.replace`),非法枚举 / 缺必填一律 fail-closed 拒写。
 
+**更绝不 `>` / `truncate` / `rm` / `: >` 看板 jsonl**——要重置一个看板,先**归档**(`render-board.py` 落
+一份 HTML 快照)再用 board.py 重建;**任何破坏性操作前先读内容**。已观测事故:协调器未看内容就用 `: >`
+清空 `threads/decisions/ticks.jsonl`,毁掉了上一轮已完成 + 全合并 run 的 durable 看板历史。
+
 `board.py` CLI(子命令在前,`--board <dir>`=看板目录跟在子命令后;`validate-contract` 例外,只用 `--file` 不带 `--board`):
 
 - `upsert-thread --id <tid> [--state S] [--branch B] [--worktree W] [--tmux-session T] [--codex-session C] [--budget-tokens N] [--budget-spent N] [--contract PATH] [--last-verdict V] [--attempt N]`

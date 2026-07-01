@@ -78,7 +78,9 @@ transcript / diff / 裁决全文撑爆**。一切重活——读几百 MB 的 co
 
 1. **协调器(`/loop` 动态模式)= 外层调度**:极薄,只做推理、决策、派发、写看板,自己不读大
    文件、不跑脚本。维护在途线程图,无就绪事项时 park 释放上下文,被事件(线程完成、人类回复、
-   定时)唤醒。这一层是 agent 推理,**不是**确定性编排脚本。
+   定时)唤醒。这一层是 agent 推理,**不是**确定性编排脚本。协调器在 main 树上**只写文档**(计划 /
+   契约 / 说明 / 覆盖矩阵),**绝不自己写 + 调代码**(源码 / 测试 / 脚本含 Workflow `.js`)——代码活走
+   worker(worktree)/ 动态 Workflow / subagent,小任务也照此(**CANON [J]**,见 `references/architecture.md`)。
 2. **内层有界动作**:每个 tick 先调官方 Workflow 工具跑 **`workflows/review-panel.js`**(review 面板,
    只读)审产物 + 对账资源;协调器据裁决决策后,再派一个 **operator subagent**(opus,可改)去操作
    tmux/codex(起/驭/回收)。review 面板由官方 Workflow 承载,operator 仍是强力(opus)subagent。
@@ -220,6 +222,8 @@ pane 上用 send-keys 启动 codex 二进制是允许的,见 `references/codex-i
 - `workflows/review-panel.js` — 随仓附带的官方 Workflow 参考脚本:协调器每 tick 调官方 Workflow 工具
   跑它(逐线程 pipeline:stage1 并发多 lens + 资源对账 + 跨模型硬规则,stage2 arbiter 收敛/escalate),
   返回 `{reviews, escalations}`。前提:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow。
+  **调用时 `args` 必须是真 JSON 对象(勿 `JSON.stringify` 成字符串),否则脚本内 `args.threads` 丢失 →
+  静默 "no threads to review" / 0 线程;返回 0 线程就修 args 形状,绝不 inline 手搓替代 review 脚本(CANON [J])。**
 
 ## 依赖与边界
 

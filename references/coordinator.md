@@ -46,6 +46,11 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
      findings, dissent, escalate[], resources[] }], escalations: [...] }
 ```
 
+**`args` 必须作为真正的 JSON 对象传给 `Workflow` 工具,绝不预先 `JSON.stringify` 成字符串**——传字符串会
+让脚本内 `args.threads === undefined` → 空数组 → 静默返回 "no threads to review" / 0 agent(已观测失败)。
+**若 review-panel 返回 0 线程,缺陷在 args 形状,就地修正 args;绝不 inline 手搓一个替代 review 脚本**——那
+等于把 review 引擎 + transcript 拉进协调器上下文,违反隔离约束与 **CANON [J]**(协调器不自己写 + 调代码)。
+
 `review-panel.js` 内部承载原 reviewer/arbiter 的全部契约语义(完整契约见 `reviewer-spec.md`),
 只是改由这个官方 Workflow 执行:
 
@@ -212,7 +217,9 @@ rollout id。
 不是你的上下文:每个 tick 先从看板读回状态,tick 末把变更写回看板并刷新 dashboard.html。
 
 硬约束:你(主 session)绝不读巨型 transcript/diff、不跑长脚本、不直接操作 tmux——全部外派给
-subagent(一律 opus),你只收回蒸馏裁决。
+subagent(一律 opus),你只收回蒸馏裁决。你在 main 树上**只写文档**(计划 / 契约 / 说明 / 覆盖矩阵),
+**绝不自己写 + 调代码**(源码 / 测试 / 脚本含 Workflow `.js`)——代码活一律走 worker(worktree)/ 动态
+Workflow / subagent,小任务也照此(CANON [J])。
 
 输出语言:你对我(用户)的每一条摘要 / 叙述 / 追问一律用中文,只有术语 / 标识符 / 命令 / 代码 / 路径
 保留英文;读英文源码或英文文档时也不得漂移成英文叙述。
@@ -227,7 +234,9 @@ subagent(一律 opus),你只收回蒸馏裁决。
    escalate[], resources[] }], escalations:[...] }。Workflow 内部 stage1 并发多 lens
    (correctness/bounds/invariant/repro)+ 每 lens 跑 discover-threads.py 对账资源 + 跨模型硬规则
    (worker 非 codex 追加 codex-review.sh 腿),stage2 每线程 arbiter 收敛(不投票、对照契约 ground
-   truth、裁不动则 escalate);巨型 transcript 隔离在 Workflow 上下文里,绝不回灌给你。
+   truth、裁不动则 escalate);巨型 transcript 隔离在 Workflow 上下文里,绝不回灌给你。args 必须是真 JSON
+   对象(别 stringify,否则 threads 丢失、静默 0 线程);返回 0 线程就修 args,**绝不 inline 手搓 review
+   脚本**(CANON [J])。
 2) 决策(你,薄):消费 Workflow 返回的收敛裁决(收敛已在 Workflow 内完成)——verdict=pass/continue
    则自动处理;verdict=escalate 及 escalations[] 则用 board.py post-decision 追加决策项、
    board.py upsert-thread 把线程置 blocked-human。
@@ -235,7 +244,8 @@ subagent(一律 opus),你只收回蒸馏裁决。
    孤儿 worktree)→ 标记软停 + post 决策项,且本 tick 不扩张 codex。标出可回收集。对 state=ready 线程
    定下分支/worktree/目标契约(尊重并发上限);起 worker 前契约副本
    .curryflows/contracts/<thread-id>.md 必过 board.py validate-contract。所有看板写入一律走
-   scripts/board.py,绝不手编 jsonl。
+   scripts/board.py,**绝不手编 / 截断 / `>` jsonl**(破坏性操作前先读内容——已观测:未看就清空毁掉
+   durable 历史)。
 3) 操作:派 1 个 operator subagent(opus,可改)执行所有写动作:detach 起 codex /goal(用
    inject-steer.sh 注入封定契约,回传 session-id,长跑线程归 tmux 不随它退出而死)、inject/
    interrupt 驭在途 worker、reap.sh 回收可回收集。codex 启动纪律(CANON [H]):只经 tmux 起
