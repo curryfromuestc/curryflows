@@ -121,6 +121,10 @@ curryflows 把"人类必须确认"收敛成极少数 barrier,其余靠"疑问→
 问题挂到决策面异步裁,绝不静默退回 inline。上面三类硬闸 + seal-contract 仍只挡各自的不可逆动作 / 未封
 契约线程,不挡 loop 跑别的就绪线程。见 `decision-surface.md` §1b。
 
+**决策面无弹窗(CANON [K])**:协调器 /loop 全程**绝不 `AskUserQuestion`**;barrier 与一切需人判项只经
+`board.py post-decision` 进异步决策面 + 每-tick 摘要指针,**只 hold 相关线程、其余照推**,人类登录异步裁。
+无依赖的下一波直接推进,不问不停;混合波推进可推进部分、只入队需决策部分。见 `decision-surface.md` §1c。
+
 ---
 
 ## 5. speculation + commit + 资源回收

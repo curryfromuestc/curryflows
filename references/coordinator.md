@@ -93,7 +93,9 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
 
 barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的三类——合 main(串行:先 rebase 最新
 main + 重跑验证)、对外不可逆、model-divergence;另有 seal-contract 在开头封定契约。**决策默认不阻断**:
-就绪线程照推,人类决策异步进行。
+就绪线程照推,人类决策异步进行。**绝不 `AskUserQuestion`(CANON [K])**:需人判的只 post-decision 进
+`decisions.jsonl` + 摘要给指针,只 hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分;全卡住
+才 park 等事件,而非弹窗。
 
 ### 3) 操作(后派 1 个 operator subagent)
 
@@ -220,7 +222,8 @@ rollout id。
 硬约束:你(主 session)绝不读巨型 transcript/diff、不跑长脚本、不直接操作 tmux——全部外派给
 subagent(一律 opus),你只收回蒸馏裁决。你在 main 树上**只写文档**(计划 / 契约 / 说明 / 覆盖矩阵),
 **绝不自己写 + 调代码**(源码 / 测试 / 脚本含 Workflow `.js`)——代码活一律走 worker(worktree)/ 动态
-Workflow / subagent,小任务也照此(CANON [J])。
+Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**——/loop 全程零阻塞提问;需
+人判的一律 post-decision 进 decisions.jsonl + 摘要给指针,只 hold 该线程、其余照推,人类异步裁(CANON [K])。
 
 输出语言:你对我(用户)的每一条摘要 / 叙述 / 追问一律用中文,只有术语 / 标识符 / 命令 / 代码 / 路径
 保留英文;读英文源码或英文文档时也不得漂移成英文叙述。
@@ -240,7 +243,8 @@ Workflow / subagent,小任务也照此(CANON [J])。
    脚本**(CANON [J])。
 2) 决策(你,薄):消费 Workflow 返回的收敛裁决(收敛已在 Workflow 内完成)——verdict=pass/continue
    则自动处理;verdict=escalate 及 escalations[] 则用 board.py post-decision 追加决策项、
-   board.py upsert-thread 把线程置 blocked-human。
+   board.py upsert-thread 把线程置 blocked-human。**绝不 AskUserQuestion**:无依赖的下一波直接推进,只把
+   需决策项入队 + hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分(CANON [K])。
    落地人类已回复决策项(board.py resolve-decision)。runaway(UNREGISTERED / RUNAWAY-SUSPECT /
    孤儿 worktree)→ 标记软停 + post 决策项,且本 tick 不扩张 codex。标出可回收集。对 state=ready 线程
    定下分支/worktree/目标契约(尊重并发上限);起 worker 前契约副本

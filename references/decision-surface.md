@@ -32,7 +32,22 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 - **默认动作 = 起 `/loop`**:协调器进入 tick 循环——对**契约可自动封定且过 `board.py validate-contract`** 的可执行有界 / 长跑活,seal 后在 tmux 起 worker(CANON [H]);对需要人类封契约的活(seal-contract 前置未过)以及那条未回答的问题,**原样 post 到 `decisions.jsonl`** 等人类异步裁、线程置 `blocked-human`。**绝不静默退回 inline、也不停下干等**(无可起的就绪线程时,loop 按常规 park 等事件,而非退回 inline)——这与"前进不等人"一致,启动本身不是 barrier。
 - **例外(仍 fail-closed)**:`merge-main` / `outward-irreversible` / `model-divergence` 三类硬闸,以及 `seal-contract` 前置,仍各自挡住其**具体的不可逆动作 / 未封契约的那条线程**;但只挡那一个动作 / 那一条线程,**不挡 `/loop` 跑别的就绪线程**。即:无回答时,需要人类封契约或人类确认不可逆动作的那部分等着,其余可执行活照起。
 
-实务:`/curryflows <自由任务>`(非字面 `start` 子命令)即视为**启动意图**;协调器可就边界 / 第一刀提一个非阻断的澄清项,但**得不到回答时按本规则默认起 loop**,不得因"没拿到放行"而停在 inline。
+实务:`/curryflows <自由任务>`(非字面 `start` 子命令)即视为**启动意图**;协调器可就边界 / 第一刀 **post 一个非阻断决策项**(进 `decisions.jsonl`,**绝不 `AskUserQuestion`**,见 CANON [K]),但**得不到回答时按本规则默认起 loop**,不得因"没拿到放行"而停在 inline。
+
+---
+
+## 1c. CANON [K]:协调器绝不阻塞询问;人类决策只走异步决策面(前进不等人)
+
+**协调器在 /loop 全程绝不调用 `AskUserQuestion` 或任何阻塞式提问来 gate 推进——整个过程不应出现一次 AskUserQuestion。** 阻塞弹窗违背"前进不等人";人类界面只有一个:durable 决策面(`decisions.jsonl` / `dashboard.html`)+ 每-tick 摘要里的决策指针。
+
+每 tick 对每条待推进项判一次,二选一:
+
+- **无依赖 / 无需真决策**——选下一片 / 下一批 worker、推进节奏、并行编排、契约可自动封定的——**直接推进,不问不停**:按 plan / 北极星自主选下一波,seal(过 `validate-contract`)+ 起 worker(fail-open,CANON [I])。
+- **有真决策**——合 main、对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human`,摘要给指针;**只 hold 该线程,其余线程照推**。
+
+**混合波**:把可推进的部分立刻起,只把需决策的部分入队——**绝不因为一波里有一项要决策就把整波停下来问**(已观测反例:把「Merge(真 barrier)」和「Next slice(无依赖)」捆进同一次 AskUserQuestion,整波停等)。若某 tick 确实无任何可推进项(全卡在 open 决策上),则 **park**(Monitor + ScheduleWakeup)等人类回复事件,**而非弹窗**。
+
+人类登录时看决策面、`board.py resolve-decision` 回写(或口头让协调器落地);协调器下个 tick 落地已裁决项。**平时一直推进,不等人。** 本规则禁掉阻塞机制并强化 CANON [I]——CANON [I] 里的"问",从不是弹窗,而是异步决策项。
 
 ---
 
