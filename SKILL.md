@@ -229,7 +229,7 @@ pane 上用 send-keys 启动 codex 二进制是允许的,见 `references/codex-i
   跑它(逐线程 pipeline:stage1 并发多 lens + 资源对账 + 跨模型硬规则,stage2 arbiter 收敛/escalate),
   返回 `{reviews, escalations}`。前提:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow。
   **调用时 `args` 必须是真 JSON 对象(勿 `JSON.stringify` 成字符串),否则脚本内 `args.threads` 丢失 →
-  静默 "no threads to review" / 0 线程;返回 0 线程就修 args 形状,绝不 inline 手搓替代 review 脚本(CANON [J])。**
+  静默 "no threads to review" / 0 线程;返回 0 线程就修 args 形状,绝不 inline 手搓替代 review 脚本(CANON [J])。脚本已内置容错(`args` 是字符串则自动 `JSON.parse`),但仍优先传真对象。**
 
 ## 依赖与边界
 

@@ -23,7 +23,10 @@ export const meta = {
   ],
 }
 
-const A = args || {}
+// Harness-compat: some Workflow runtimes deliver the `args` global as a JSON STRING
+// (not a parsed object), which would make A.threads undefined -> silent "no threads to
+// review" / 0 agents. Parse it back if so; a real object passes through unchanged.
+const A = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const THREADS = A.threads || []
 const SKILL = A.skillDir || ''
 const BOARD = A.board || ''
