@@ -92,8 +92,10 @@ git -C <main-checkout> merge --no-ff curryflows/<thread-id>  # 合入本地 main
 
 - **绿则合**:rebase 干净 + 重跑验证通过 → `git merge` → 回传;协调器置 `state=merged`(随后分阶段 reap
   worktree + 分支)。
-- **失败才升**:rebase 冲突 settle 不了,或 rebase 后重跑验证失败 → **不合**,回传失败原因;协调器 post 一个
-  `merge-main` 决策项(async)+ 置 `blocked-human`,**其余线程照推**。
+- **冲突 / 回归自动修,不升人类**:rebase 有冲突 → operator 在该 worktree 内**直接解决冲突** + 重跑验证,
+  循环到绿再合;重跑验证失败(regression)→ 同样修到绿(是 bug、不是决策);单个 operator 搞不定的大改由
+  协调器派一个 codex 修复 worker 接手(仍 worktree 隔离)。**只有解决中暴露真·跨模型分歧才回传 escalate**
+  (协调器走 `model-divergence`,非 merge 决策);budget / 尝试次数耗尽未收敛 → 协调器 relaunch 续跑,**不弹窗**。
 - 合的是**本地 main**(可 `git revert`);**推送到对外 / 共享远端不在此列——那属 `outward-irreversible`,
   仍是人类 barrier**。回传:`merged` 数组 `{thread_id, branch, merged_into, commit}`,失败进 `failures`。
 

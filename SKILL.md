@@ -161,7 +161,7 @@ operator 执行 `scripts/reap.sh`。详见 `references/operator-spec.md`。
 
 每个长跑 worker = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
 base 可配)。worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。合 main **自动化(CANON [L])**:
-`verified` 后串行 rebase 最新 main + 重跑验证,**绿则自动合**,仅冲突 / 验证失败才升决策项。孤儿 worktree 并入资源发现对账
+`verified` 后串行 rebase 最新 main + 重跑验证,**绿则自动合**;**冲突 / 验证回归由 operator 自动修**(worktree 内 resolve + 重跑,循环到绿),不升人类,唯真·跨模型分歧走 model-divergence。孤儿 worktree 并入资源发现对账
 + 回收。
 
 ## 人类决策(barrier,异步、非阻断)

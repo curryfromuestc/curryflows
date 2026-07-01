@@ -92,7 +92,7 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
   worker)。
 
 barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的**两类**——对外不可逆、model-divergence;
-**合 main 已自动化(CANON [L]:`verified` 即自动 rebase + 重跑验证 + 合,仅 rebase 冲突 / 重跑验证失败才升)**;
+**合 main 已自动化(CANON [L]:`verified` 即自动 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;
 另有 seal-contract 在开头封定契约。**决策默认不阻断**:
 就绪线程照推,人类决策异步进行。**绝不 `AskUserQuestion`(CANON [K])**:需人判的只 post-decision 进
 `decisions.jsonl` + 摘要给指针,只 hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分;全卡住
@@ -160,7 +160,8 @@ ready → running → idle → reviewed → committed → verified → session-r
 - `idle → reviewed`(审计)与 `committed → verified`(在 committed 分支 worktree 上独立复跑):**reviewer**
   (见 `reviewer-spec.md`)。
 - `verified → merged`:**自动合(CANON [L])**——operator 串行 rebase 最新 main + 重跑验证 + `git merge`,
-  协调器置 `merged`(仅 rebase 冲突 / 重跑验证失败时才改 post `merge-main` 决策项 + 置 `blocked-human`)。
+  协调器置 `merged`(**冲突 / 验证回归 → operator 在 worktree 内直接修 + 重跑验证,循环到绿再合,不升人类**;
+  单个搞不定的大改派 codex 修复 worker 接手;唯解决中暴露真·跨模型分歧才走 `model-divergence`)。
 - `→ blocked-human` / `→ rolled-back`、各状态置位写看板:**协调器**(决策 + `board.py`)。
 
 ### 分阶段 reap
@@ -268,6 +269,6 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
    1200-1800s 后再唤醒,然后停下省上下文。
 
 硬闸:运行期**两类**(默认不阻断推进,人类异步处理)——对外不可逆、model-divergence;**合 main 自动化
-(CANON [L]:`verified` 即 operator 串行 rebase + 重跑验证 + 合,仅冲突 / 重跑验证失败才升)**;另有
+(CANON [L]:`verified` 即 operator 串行 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;另有
 seal-contract 在开头封定 worker 目标契约(barrier 取值共 4 个)。
 ```

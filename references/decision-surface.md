@@ -19,7 +19,7 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 | barrier | 含义 | 触发处 |
 |---|---|---|
 | `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头** | 起 worker 之前(封定目标契约) |
-| `merge-main` | **非人类 barrier(CANON [L])**:`verified` 即自动 rebase + 重跑验证 + 合;仅 rebase 冲突 / 重跑验证失败才 post 此项 | 协调器自动合 main 失败时 |
+| `merge-main` | **实质退役(CANON [L])**:`verified` 即自动 rebase + 重跑验证 + 合;冲突 / 验证回归由 operator 自动修,**不 post**;仅解决中暴露真分歧才走 `model-divergence` | 几乎不用 |
 | `outward-irreversible` | 对外不可逆操作硬闸 | 协调器 / worker 遇不可逆动作 |
 | `model-divergence` | 跨模型真分歧 / 契约缺口,reviewer escalate、协调器裁不动 | reviewer 裁决 → 协调器收敛 |
 
@@ -55,12 +55,15 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 
 **`merge-main` 不是人类决策 barrier。** worker 到 `verified`(review 已 pass + 契约级独立复跑通过、非 worker 自报)后,协调器**自动**合 main、无需人类:operator 串行地(一次一个,避免 main 竞态)rebase 到最新 main → 重跑验证 → **绿则 `git merge`(state→merged)** → 分阶段 reap。happy path 零决策、零弹窗。
 
-**只有两种失败才 escalate**(post 一个 `merge-main` 决策项,async,hold 该线程、其余照推):
+**冲突和验证回归都自动修,不升人类**(operator 是 subagent,在 worktree 里改代码 + 重跑验证不违反 CANON [J]):
 
-1. rebase 冲突 settle 不了;
-2. rebase 后重跑验证失败(即"验证有问题")。
+- **rebase 有冲突** → operator **直接解决冲突**(在该 worktree 内),resolve + 重跑该线程 VERIFICATION,循环到绿再合。冲突是"活",不是"决策"。
+- **rebase 后重跑验证失败**(regression)→ 同样 operator 修到绿再合(是 bug,不是决策);单个 operator 搞不定的大改可由协调器派一个 codex 修复 worker 接手(仍是 worktree 隔离)。
+- budget / 尝试次数耗尽仍未收敛 → 协调器按 relaunch 续跑(受总预算上限),**仍不弹窗**。
 
-合 main 是**本地 merge**(可 `git revert`,分支保留到 `merged`),安全性由跨模型 review + 契约级独立复跑兜住,不靠人类签字。**推送到对外 / 共享远端仍属 `outward-irreversible`,仍是人类 barrier**(合本地 main ≠ 对外)。
+**唯一残留升人类的**:解决过程中暴露的**真·跨模型分歧**(reviewer 对照 ground truth 裁不动)——走 `model-divergence`,**不是 merge 决策**。即 `merge-main` 作为人类 barrier **实质退役**:冲突不再是决策。
+
+合 main 是**本地 merge**(可 `git revert`,分支保留到 `merged`),安全性由跨模型 review + 契约级独立复跑 + 合并后重跑验证兜住,不靠人类签字。**推送到对外 / 共享远端仍属 `outward-irreversible`,仍是人类 barrier**(合本地 main ≠ 对外)。
 
 于是运行期真正升人类的 barrier 收敛为 **`outward-irreversible` + `model-divergence`**(+ `seal-contract` 前置当契约需人定、+ `merge-main` 仅上面两种失败时)。自动合入的事实进每-tick 摘要;可选 post 一个 `status=resolved` 的 merge 记录项供人类事后可见,但**不阻断**。
 
@@ -123,7 +126,7 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 5. 人类只在这条队列上异步工作:逐条看 `summary` / `divergence` / `evidence`(点开 artifact)/ `recommendation`,在 `options` 里选;裁决结果**通过 `board.py resolve-decision --id <did> --resolution <text> [--status resolved|rejected]` 写回**——`board.py` 是 `decisions.jsonl` 的唯一写入者,**绝不手编 `decisions.jsonl`**(手编易写坏行,而 `render-board.py` 对坏行静默跳过会无声丢决策)——**前进不等人**。
 6. 人类回复构成一个事件,唤醒 park 的协调器 `/loop` 在下个 tick 落地对应 thread(落地两条路见第 5 节)。
 
-`outward-irreversible` 硬闸不经 reviewer 裁决,由协调器遇不可逆动作时直接组装决策项 post 到 `decisions.jsonl`;`merge-main` 仅在自动合失败(rebase 冲突 / 重跑验证失败)时才 post(见 CANON [L],happy path 不入队);seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
+`outward-irreversible` 硬闸不经 reviewer 裁决,由协调器遇不可逆动作时直接组装决策项 post 到 `decisions.jsonl`;`merge-main` **实质退役**——冲突 / 验证回归都由 operator 自动修(CANON [J]),happy path 与失败路径均不入队,仅解决中暴露真·跨模型分歧才走 `model-divergence`(见 CANON [L]);seal-contract 在流程开头由 plan-tree 交叉评审 + 人封产生。
 
 ---
 

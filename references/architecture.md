@@ -133,7 +133,8 @@ CANON [L]**);另有 **seal-contract** 在开头封定 worker 的目标契约(pla
 - 每个长跑 worker = **独立分支 + 独立 worktree**(默认 base `~/.cache/curryflows/worktrees/<project>/<thread-id>`,可配)。
 - worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。
 - 合 main **自动化**(CANON [L]):`verified` 后协调器串行(一次一个)rebase 最新 main + 重跑验证,
-  **绿则自动合(→ merged)**,仅 rebase 冲突 / 重跑验证失败才升决策项。
+  **绿则自动合(→ merged)**;冲突 / 验证回归由 operator 自动修(worktree 内 resolve + 重跑,CANON [J]),
+  循环到绿再合、不升人类,唯真·跨模型分歧走 model-divergence。
 - **用完即回收**:operator 每 tick 把跑完 / 孤儿的 tmux 会话、codex 线程、worktree 直接回收
   (`reap.sh`:`tmux kill-session` + `git worktree remove/prune` + 删 curryflows 分支),这是硬职责,不指望收尾钩子。
   `discover-threads.py` 双向对账给出可回收集。
