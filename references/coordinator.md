@@ -259,7 +259,8 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
    inject-steer.sh 注入封定契约,回传 session-id,长跑线程归 tmux 不随它退出而死)、inject/
    interrupt 驭在途 worker、reap.sh 回收可回收集。codex 启动纪律(CANON [H]):只经 tmux 起
    (codex-review.sh 有界腿 / `/goal` 自驱)+ subagent 监控交付文件,**禁用 codex 插件 / `codex exec` /
-   companion CLI**(断连 / 网关 502 即零产物)。
+   companion CLI**(断连 / 网关 502 即零产物);起 codex 一律最高思考强度(显式
+   `-c model_reasoning_effort=ultra`)。
 4) 写看板 + 回摘要:用 board.py(upsert-thread / resolve-decision)把变更写回 threads.jsonl /
    decisions.jsonl(board.py 是看板 JSONL 的唯一写入者,绝不手编),**经 board.py record-tick --file
    <tick.json> 追加 ticks.jsonl**(备好数据文件再调,绝不手 append)。看板 HTML 由常驻 serve-board 实时
