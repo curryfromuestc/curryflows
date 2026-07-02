@@ -20,10 +20,10 @@ operator 动作还是协调器临时起一条有界 review——**只能经 tmux
 `scripts/codex-review.sh`、自驱 worker 用 `codex … /goal`)→ codex TUI 起来后改走
 `scripts/inject-steer.sh` 注入(CANON [F])。
 
-**思考强度一律最高档**:任何 codex 启动命令都**显式**带 `-c model_reasoning_effort=ultra`
-(codex-cli 0.142.x 枚举 `minimal/low/medium/xhigh/ultra` 的最高档;CLI 升级若出现更高档,取
-当时的最高档)。宿主机可另在 `~/.codex/config.toml` 设同值兜底,但启动命令不依赖宿主配置、
-必须自带该参数——防止换机 / 配置漂移后 worker 静默跑在低强度上。
+**思考强度一律最高档**:任何 codex 启动命令都**显式**带 `-c model_reasoning_effort=xhigh`
+(codex 模型实际可用的最高档;CLI 枚举里虽有 `ultra`,但 codex 模型不接受,最高即 `xhigh`)。
+宿主机可另在 `~/.codex/config.toml` 设同值兜底,但启动命令不依赖宿主配置、必须自带该参数——
+防止换机 / 配置漂移后 worker 静默跑在低强度上。
 
 **禁用**(fail-closed,不得回退):codex 插件命令(`codex:rescue` / `codex:review` /
 `codex:adversarial-review`)、`codex exec`(headless)、以及任何 companion / 远端 CLI 代理路径。理由:
@@ -108,7 +108,7 @@ codex-review.sh --cwd <dir> --prompt-file <f> --out <findings-path> \
 - `--out`(必填):findings 文件路径;脚本启动时先 `rm -f` 该路径,完成后把绝对路径
   echo 到 stdout。
 - `--name`:tmux 会话名,默认 `cfx_rev_$$`。
-- `--effort`:`model_reasoning_effort`,默认 `ultra`(最高档,CANON [H];可显式降档,但默认绝不低于最高)。
+- `--effort`:`model_reasoning_effort`,默认 `xhigh`(最高档,CANON [H];可显式降档,但默认绝不低于最高)。
 - `--ready-timeout`:等 codex TUI 起来的秒数,默认 90。
 - `--timeout`:等 findings 文件出现并稳定的秒数,默认 1800。
 - `--keep`:完成后保留 tmux 会话(默认拆除)。

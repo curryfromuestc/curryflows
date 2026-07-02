@@ -31,7 +31,7 @@ git -C <projectDir> worktree add -b curryflows/<thread-id> \
 tmux new-session -d -s cfx_<thread-id> -c <worktree>
 # 该 pane 此刻还是普通 shell:用 send-keys 在其上启动 codex 二进制(CANON [F] 允许);
 # 思考强度一律最高档(CANON [H])
-tmux send-keys -t cfx_<thread-id> 'codex -c model_reasoning_effort=ultra' Enter
+tmux send-keys -t cfx_<thread-id> 'codex -c model_reasoning_effort=xhigh' Enter
 # TUI 起来后改走 inject-steer.sh,注入已封契约(经文件传入);此后绝不再手搓 send-keys
 bash <skillDir>/scripts/inject-steer.sh send cfx_<thread-id> \
   <projectDir>/.curryflows/contracts/<thread-id>.md
@@ -55,7 +55,7 @@ session-id 回传给协调器,协调器写回看板(见 `goal-contract.md`「启
 (`codex:rescue` / `codex:review` / `codex:adversarial-review`)、以及任何 companion / 远端 CLI 代理
 (在 headless 之上再加一跳网关,502 / 限流即整段失败、零产物——已观测)。只有走 tmux 才能断连重连不丢
 进度、且可被 subagent 监控(见 `codex-integration.md`)。起 codex **一律最高思考强度**:启动命令显式带
-`-c model_reasoning_effort=ultra`(当前 CLI 最高档),不依赖宿主 `~/.codex/config.toml`。
+`-c model_reasoning_effort=xhigh`(当前 CLI 最高档),不依赖宿主 `~/.codex/config.toml`。
 
 ### 2) 驭在途 worker
 
@@ -138,7 +138,7 @@ operator 不擅自回收在途 worker,也不自行判断
 ```bash
 # 不动 worktree / 分支,只在原 worktree 上起新 detached 会话(send-keys 规则同 CANON [F])
 tmux new-session -d -s cfx_<thread-id> -c <worktree>
-tmux send-keys -t cfx_<thread-id> 'codex -c model_reasoning_effort=ultra' Enter   # shell pane 启动 codex(允许);最高思考强度(CANON [H])
+tmux send-keys -t cfx_<thread-id> 'codex -c model_reasoning_effort=xhigh' Enter   # shell pane 启动 codex(允许);最高思考强度(CANON [H])
 # TUI 起来后改走 inject-steer.sh,注入扩展后的已封契约;此后绝不再手搓 send-keys
 bash <skillDir>/scripts/inject-steer.sh send cfx_<thread-id> \
   <projectDir>/.curryflows/contracts/<thread-id>.md

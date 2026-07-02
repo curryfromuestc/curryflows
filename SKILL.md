@@ -196,7 +196,7 @@ pane 上用 send-keys 启动 codex 二进制是允许的,见 `references/codex-i
 并实时监控交付文件到稳定,自驱 worker 由 operator detach 起、每 tick reviewer 审。**禁用** codex 插件
 命令(`codex:rescue` / `codex:review` / `codex:adversarial-review`)、`codex exec`、companion / 远端 CLI
 代理——它们断连 / 网关 502 即整段丢、零产物(已观测)。即使在尚未起协调器的 inline 场景也照此办理。
-起 codex **一律最高思考强度**:启动命令显式带 `-c model_reasoning_effort=ultra`(当前 CLI 最高档),
+起 codex **一律最高思考强度**:启动命令显式带 `-c model_reasoning_effort=xhigh`(当前 CLI 最高档),
 不依赖宿主全局配置。详见 `references/codex-integration.md`。
 
 ## 操作
