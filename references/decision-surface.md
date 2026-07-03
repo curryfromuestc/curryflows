@@ -34,6 +34,8 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 
 实务:`/curryflows <自由任务>`(非字面 `start` 子命令)即视为**启动意图**;协调器可就边界 / 第一刀 **post 一个非阻断决策项**(进 `decisions.jsonl`,**绝不 `AskUserQuestion`**,见 CANON [K]),但**得不到回答时按本规则默认起 loop**,不得因"没拿到放行"而停在 inline。
 
+**[I] 的边界(fail-closed):`no-answer → 默认动作` 只适用于"要不要起 loop / 要不要把某块可执行活交给 worker"这类启动问题,绝不外推到 barrier 决策项。** 一个 `outward-irreversible` / `model-divergence` / 需人定的 ABI·编码·tier 决策项,**沉默一律等于继续等,不等于放行**(见 CANON [N])。把 [I] 的"问了没答就按默认走"套到 barrier 决策项上,就是已观测的越权失败模式("人类知悉未异议 → 按默认推进")。
+
 ---
 
 ## 1c. CANON [K]:协调器绝不阻塞询问;人类决策只走异步决策面(前进不等人)
@@ -43,11 +45,11 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 每 tick 对每条待推进项判一次,二选一:
 
 - **无依赖 / 无需真决策**——选下一片 / 下一批 worker、推进节奏、并行编排、契约可自动封定的——**直接推进,不问不停**:按 plan / 北极星自主选下一波,seal(过 `validate-contract`)+ 起 worker(fail-open,CANON [I]);且按 CANON [M] 流水线化——scoping 与在途执行重叠、双水位补货、绝不等上一波收官(权威见 `coordinator.md`「调度纪律」)。
-- **有真决策**——对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择(**合 main 已自动化,仅验证失败才升,见 CANON [L]**)——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human`,摘要给指针;**只 hold 该线程,其余线程照推**。
+- **有真决策**——对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择(**合 main 已自动化,仅验证失败才升,见 CANON [L]**)——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human` 且 **operator 对其 codex 注入 Esc 软停**(`interrupt-target.sh`,进程存活、goal 上下文完整,**绝不 reap**),摘要给指针;**只 hold 该线程,其余线程照推**。`recommendation` 是给人类看的建议,**协调器不得据此自行放行**——该线程停到人类明确 resolve 为止(见 CANON [N])。
 
 **混合波**:把可推进的部分立刻起,只把需决策的部分入队——**绝不因为一波里有一项要决策就把整波停下来问**(已观测反例:把「Merge(真 barrier)」和「Next slice(无依赖)」捆进同一次 AskUserQuestion,整波停等)。若某 tick 确实无任何可推进项(全卡在 open 决策上),则 **park**(Monitor + ScheduleWakeup)等人类回复事件,**而非弹窗**。
 
-人类登录时看决策面、`board.py resolve-decision` 回写(或口头让协调器落地);协调器下个 tick 落地已裁决项。**平时一直推进,不等人。** 本规则禁掉阻塞机制并强化 CANON [I]——CANON [I] 里的"问",从不是弹窗,而是异步决策项。
+人类登录时看决策面、`board.py resolve-decision` 回写(或口头让协调器落地);协调器下个 tick 落地已裁决项。**"不等人"的准确含义**:不用弹窗打断你、也不让无关线程陪着停——**不是**决策项到点自动放行。有决策项的**那条**线程一直停等你(CANON [N]),其余无依赖线程照跑(CANON [M]);你没回,那条线程就一直停着。本规则禁掉阻塞弹窗并强化 CANON [I]——CANON [I] 里的"问",从不是弹窗,而是异步决策项;但异步**不等于**不等人(见 CANON [N])。
 
 ---
 
@@ -66,6 +68,23 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 合 main 是**本地 merge**(可 `git revert`,分支保留到 `merged`),安全性由跨模型 review + 契约级独立复跑 + 合并后重跑验证兜住,不靠人类签字。**推送到对外 / 共享远端仍属 `outward-irreversible`,仍是人类 barrier**(合本地 main ≠ 对外)。
 
 于是运行期真正升人类的 barrier 收敛为 **`outward-irreversible` + `model-divergence`**(+ `seal-contract` 前置当契约需人定、+ `merge-main` 仅上面两种失败时)。自动合入的事实进每-tick 摘要;可选 post 一个 `status=resolved` 的 merge 记录项供人类事后可见,但**不阻断**。
+
+---
+
+## 1e. CANON [N]:决策项真停其线程(Esc 软停、沉默不是同意)
+
+CANON [K] 管"**怎么问人**"(只走异步决策面、绝不弹窗);**本条管"入队之后那条线程怎么办"**。两者互补——缺了 [N],[K] 会被误读成"永不等人"(已观测:协调器把 fail-open 的"没答就按默认走"套到 barrier 上,发明"知悉未异议→推进"、"异步 veto"、"协调器对 barrier 自裁 RULING",其中一次导致 688 行产物返工)。
+
+**入队一个决策项(`post-decision`)⟺ 那条线程真的停下等人:**
+
+- **该线程 `blocked-human` + Esc 软停其 codex**:operator 对该 pane 注入单个 Esc(`interrupt-target.sh`)——**codex 进程存活、`/goal` 上下文完整,只停在途 turn**;**绝不 reap session、绝不 relaunch**(reap 会丢掉整个 goal 推理态,relaunch 等于从头理解契约)。软停后的 worker idle 在 tmux 里等,占用极小、不算 runaway。**注意与 `verified` 状态区分**:`verified`(活已干完、等合)才 reap session(CANON [B] 分阶段);`blocked-human`(活没干完、等你裁)只软停、不 reap。
+- **沉默 = 继续等,不是同意**:决策项在人类**明确** resolve 前一直 `open`,该线程一直停。**禁止的越权话术**(fail-closed,写进 resolution 即违规):① "人类知悉未异议 → 按默认推进"(沉默当同意);② "采纳推荐默认"而无人类明确批准;③ "异步 veto 窗口 / 先执行后否决"(把需人批的动作先做了再留否决窗口);④ 协调器对 `outward-irreversible` / `model-divergence` 标记项自行 "RULING / 裁定"。`resolve-decision` 的 `resolution` **必须能指向一次真实的人类动作**(dashboard resolve / 口头指示 / 消息里的明确批准),否则不得 resolve。
+- **只停该线程,其余照跑**:靠 CANON [M] 的 ready 池——[K] 不弹窗、[M] 有别的活可推、[N] 该线程真停,三者互补才让"停得起"。
+- **resolve 后同一会话续跑**:人类裁决后,operator 用 `inject-steer.sh` 把裁决注入**同一个** pane,软停的 codex 带完整上下文继续,**零重启、零上下文丢失**;线程从 `blocked-human` 回 `running`。
+
+**二分(消灭"自裁式 barrier"第三态):** 一个"点"要么对照契约 ground truth **能判 → 就地裁、不入队**(arbiter / 协调器裁,只在 tick 摘要留痕),要么 **判不动 → 入队 + 该线程 [N] 真停 + 等人**。**没有"入队了又自己裁"的中间态**:标了 `outward-irreversible` / `model-divergence` 就意味着判不动、必等人;若其实能判,就别入队、直接裁。reviewer 的 `verdict=escalate` 语义是"我裁不动",它只能流向人类,**不能被协调器替换成自己的 RULING**。
+
+**seal-contract 修订同理**:改变"什么算合格交付"的契约修订(outcome / verification / boundaries / blocked_stop / ABI / tier 层级)= 真决策,**重封(人批)前 worker 不得越过被改动的边界**,不许"先执行、开 veto 窗口"。纯机械对齐(引用行号 re-pin、base rebase 收敛)不改验收语义,不算决策、不入队。
 
 ---
 

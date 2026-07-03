@@ -76,10 +76,17 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
 
 - **消费收敛裁决**:收敛由 review-panel.js 的 arbiter 在 Workflow 内完成(不投票、对照契约 ground
   truth),协调器只消费返回值——`verdict=pass`/`continue` → 自动处理;`verdict=escalate` 及
-  `escalations[]`(裁不动)→ 用 `board.py post-decision`(status=open)追加决策项,并用
-  `board.py upsert-thread --state blocked-human` 把对应线程置 `blocked-human`。
-- **落地人类已回复的决策项**:对 `board.py list-decisions --open` 读回的已裁决项,定下要执行的操作
-  (合 main / 回滚 / 注入指令),并用 `board.py resolve-decision` 标记 resolution。
+  `escalations[]`(裁不动)→ 用 `board.py post-decision`(status=open)追加决策项,用
+  `board.py upsert-thread --state blocked-human` 把对应线程置 `blocked-human`,**并让 operator 对该
+  线程 codex 注入 Esc 软停**(`interrupt-target.sh`,进程存活、goal 上下文完整,**绝不 reap**)。
+  **`escalate` 语义是"arbiter 裁不动 → 归人类",协调器绝不把它替换成自己的 RULING**(能自裁就不该
+  escalate;标了 barrier 就必等人,CANON [N])。
+- **落地人类已回复的决策项**:对 `board.py list-decisions --open` 读回**已由人类明确裁决**的项,定下要
+  执行的操作(合 main / 回滚 / 注入指令),用 `board.py resolve-decision` 标记 resolution,并让 operator
+  用 `inject-steer.sh` 把裁决注入**同一个** pane(软停的 codex 带完整上下文续跑、线程回 `running`)。
+  **决策项在人类明确 resolve 前一直 `open`、该线程一直停——沉默不是同意**:严禁以"知悉未异议 / 采纳推荐
+  默认 / 异步 veto 先执行后否决"自行 resolve(fail-closed 越权话术,CANON [N]);`resolution` 必须指向
+  一次真实人类动作。
 - **处置 runaway**:Workflow 返回 `resources[]` 报的 `UNREGISTERED` / `RUNAWAY-SUSPECT` / 孤儿
   worktree → 决定软停 + post 决策项;在 runaway 未被人类裁决前,本 tick 不扩张 codex 占用。
 - **决定可回收集**:Workflow 返回 `resources[]` 报的跑完 / 孤儿资源 → 标记本 tick 由 operator 回收。
@@ -96,10 +103,11 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
 
 barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的**两类**——对外不可逆、model-divergence;
 **合 main 已自动化(CANON [L]:`verified` 即自动 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;
-另有 seal-contract 在开头封定契约。**决策默认不阻断**:
-就绪线程照推,人类决策异步进行。**绝不 `AskUserQuestion`(CANON [K])**:需人判的只 post-decision 进
-`decisions.jsonl` + 摘要给指针,只 hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分;全卡住
-才 park 等事件,而非弹窗。
+另有 seal-contract 在开头封定契约。**决策默认不阻断 = 不阻断"其余线程",不是不阻断"那条线程"**:
+需人判的**那条**线程真停等人(`blocked-human` + Esc 软停,沉默不是同意,CANON [N]),**其余无依赖线程照推**
+(CANON [M])。**绝不 `AskUserQuestion`(CANON [K])**:需人判的只 post-decision 进 `decisions.jsonl` +
+摘要给指针;混合波推进可推进部分、只入队需决策部分;全卡住才 park 等事件,而非弹窗。**[I] 的"没答按默认走"
+只管启动问题,绝不外推到 barrier 决策项**(barrier 项沉默一律继续等,CANON [N])。
 
 ### 3) 操作(后派 1 个 operator subagent)
 
@@ -278,9 +286,14 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
    脚本**(CANON [J])。
 2) 决策(你,薄):消费 Workflow 返回的收敛裁决(收敛已在 Workflow 内完成)——verdict=pass/continue
    则自动处理;verdict=escalate 及 escalations[] 则用 board.py post-decision 追加决策项、
-   board.py upsert-thread 把线程置 blocked-human。**绝不 AskUserQuestion**:无依赖的下一波直接推进,只把
-   需决策项入队 + hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分(CANON [K])。
-   落地人类已回复决策项(board.py resolve-decision)。runaway(UNREGISTERED / RUNAWAY-SUSPECT /
+   board.py upsert-thread 把线程置 blocked-human,**并让 operator 对该线程 codex 注入 Esc 软停
+   (interrupt-target.sh,进程存活、goal 上下文完整,绝不 reap)**。**escalate=arbiter 裁不动→归人类,
+   绝不替换成协调器自己的 RULING**(CANON [N])。**绝不 AskUserQuestion**:无依赖线程直接推进,只把需决策项
+   入队;混合波推进可推进部分、只入队需决策部分(CANON [K])。**决策项真停其线程(CANON [N]):那条线程停
+   到人类明确 resolve 为止——沉默不是同意,严禁以"知悉未异议 / 采纳推荐默认 / 异步 veto 先执行后否决 /
+   协调器对 barrier 自裁"自行放行;[I] 的"没答按默认走"只管启动、绝不用于 barrier 决策项**。落地人类**已
+   明确裁决**的项:board.py resolve-decision(resolution 须指向真实人类动作)+ operator 用 inject-steer.sh
+   把裁决注入同一 pane 续跑(线程回 running)。runaway(UNREGISTERED / RUNAWAY-SUSPECT /
    孤儿 worktree)→ 标记软停 + post 决策项,且本 tick 不扩张 codex。标出可回收集。**调度水位(CANON
    [M],硬项)**:in-flight 低于并发水位(=并发上限,默认 4)且有 sealed-ready 线程 → 本 tick 必须补
    launch 至水位;sealed-ready 池低于水位 → 本 tick 必须并行起/续下一批 scoping,绝不等上一波收官;
@@ -304,7 +317,8 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
 5) park 或 continue:有就绪事项或水位欠账(CANON [M])就继续;否则 arm Monitor 等线程完成/人类回复,
    ScheduleWakeup 1200-1800s 后再唤醒,然后停下省上下文。
 
-硬闸:运行期**两类**(默认不阻断推进,人类异步处理)——对外不可逆、model-divergence;**合 main 自动化
+硬闸:运行期**两类**(不阻断**其余线程**,但触发项的**那条线程真停等人**——Esc 软停、沉默不是同意,
+CANON [N])——对外不可逆、model-divergence;**合 main 自动化
 (CANON [L]:`verified` 即 operator 串行 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;另有
 seal-contract 在开头封定 worker 目标契约(barrier 取值共 4 个)。
 ```

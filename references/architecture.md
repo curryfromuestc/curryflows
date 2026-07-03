@@ -3,7 +3,8 @@
 一句话定位:curryflows 把人类 review 从构建关键路径上解耦——一个 `/loop` 协调器以"审核优先"
 推进多个在 tmux 里长跑的 codex /goal worker,每个产物经跨模型 review(worker=codex、
 reviewer=Claude)+ 反捏造审核守住,人类异步看蒸馏后的决策面,只有对外不可逆、跨模型真分歧才升人类
-(合 main 验证过即自动合,见 CANON [L]),**默认不阻断推进**。
+(合 main 验证过即自动合,见 CANON [L]),**默认不阻断推进**——"不阻断"指不弹窗、其余无依赖线程照跑;
+触发决策的那条线程仍真停等人(Esc 软停、沉默不是同意,CANON [N])。
 
 > 在 `SKILL.md` 的 references 索引中,本文件登记为:`architecture.md` — 三层模型、审核优先
 > tick、跨模型 review、barrier、subagent 边界。
@@ -125,6 +126,12 @@ CANON [L]**);另有 **seal-contract** 在开头封定 worker 的目标契约(pla
 **决策面无弹窗(CANON [K])**:协调器 /loop 全程**绝不 `AskUserQuestion`**;barrier 与一切需人判项只经
 `board.py post-decision` 进异步决策面 + 每-tick 摘要指针,**只 hold 相关线程、其余照推**,人类登录异步裁。
 无依赖的下一波直接推进,不问不停;混合波推进可推进部分、只入队需决策部分。见 `decision-surface.md` §1c。
+
+**决策项真停其线程(CANON [N])**:入队 = 那条线程真停等人——`blocked-human` + operator 对其 codex 注入
+Esc 软停(`interrupt-target.sh`,进程存活、goal 上下文完整,**绝不 reap**;与 `verified` 的 session-reap
+区分);**沉默 = 继续等,不是同意**,禁"知悉未异议 / 采纳推荐默认 / 异步 veto / 协调器对 barrier 自裁"
+自行放行;人类 resolve 后 `inject-steer.sh` 注入同一 pane 续跑。[K](不弹窗)+ [N](那条线程真停)+ [M]
+(其余线程有活可推)三者互补;[I] 的"没答按默认走"只管启动、绝不用于 barrier 决策项。见 `decision-surface.md` §1e。
 
 ---
 

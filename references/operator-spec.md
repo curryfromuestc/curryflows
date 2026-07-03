@@ -65,6 +65,13 @@ session-id 回传给协调器,协调器写回看板(见 `goal-contract.md`「启
 - **软停**:`interrupt-target.sh <pane>` 发单个 Escape——codex 进程存活、goal 上下文完整,只停
   在途 turn,供人类 review 后再指示。
 
+**决策点软停(CANON [N]):线程命中真·决策点被置 `blocked-human` 时,operator 对其 codex 注入 Esc 软停
+(`interrupt-target.sh`)——不是回收。** codex 进程存活、`/goal` 上下文完整,idle 在 tmux 里等人类裁决,
+占用极小。**绝不对 `blocked-human` 线程 reap session / relaunch**(reap 会丢整个 goal 推理态)。人类 resolve
+后,协调器派 operator 用 `inject-steer.sh` 把裁决注入**同一个** pane,codex 带完整上下文续跑,线程回
+`running`——零重启、零上下文丢失。**与 `verified` 区分**:`verified`(活已干完、等合)才 reap session
+(CANON [B] 分阶段,见下 §4);`blocked-human`(活没干完、等裁)只软停不 reap。
+
 ### 3) commit worker 工作到自有分支(durability,`reviewed → committed`)
 
 reviewer 审完(线程到 `reviewed`)后,协调器决策把该 worker 的工作 commit 到它**自己的分支**

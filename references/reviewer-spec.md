@@ -117,7 +117,9 @@ reviewer 在线程状态机里有两个**不同**的介入点,二者职责不可
 
 per-lens 对象**不含** `thread`——arbiter 收敛后每个外层 `reviews[]` 项才叠加 `thread / branch /
 worktree`;其 `escalate[]` 每项给 `{title, divergence, evidence(路径), recommendation}`,供协调器
-组装决策项(见 `decision-surface.md`)。
+组装决策项(见 `decision-surface.md`)。**`verdict=escalate` = arbiter 裁不动 → 归人类**:协调器只把它
+**组装成决策项**(该线程 `blocked-human` + Esc 软停等人,CANON [N]),**绝不把 `escalate` 替换成协调器
+自己的 RULING、也不据 `recommendation` 自行放行**——`recommendation` 是给人类看的建议(CANON [N])。
 
 ## 清晰、不糊弄
 
