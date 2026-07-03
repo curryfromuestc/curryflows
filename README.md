@@ -89,7 +89,9 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
   validate-contract,原子 + 枚举/必填 fail-closed)、`render-board.py`(jsonl → HTML 看板)、
   `serve-board.py`(本地端口 serve 实时看板)、`reap.sh`(资源回收,分阶段)、
   `inject-steer.sh` / `interrupt-target.sh` / `locate-codex.sh`(codex 的 tmux 驱动器)、
-  `codex-review.sh`(codex 第二意见腿:worker=codex 时可选、worker=Claude 时必需)。
+  `codex-review.sh`(codex 第二意见腿:worker=codex 时可选、worker=Claude 时必需)、
+  `precondition-dryrun.sh`(seal 前 environment-precondition dry-run:在 throwaway worktree 上真跑契约
+  声明的 `preconditions` 检查,fail-closed,CANON [O])。
 - `workflows/` — 官方 Workflow 参考脚本:`review-panel.js`(内层 review 面板的官方 Workflow 参考脚本)。
 - `task-contracts/` — `task.md` 通用任务契约骨架(给项目 copy 填写,经 seal-contract 人封)。
 

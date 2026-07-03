@@ -74,7 +74,28 @@ BOUNDARIES / ITERATION / BUDGET / BLOCKED_STOP)审:
 
 **完成必须基于证据,不是 worker 自认为完成。** reviewer 不接受 transcript 里"tests passed /
 done"这类自述——必须**独立核对**:对照 VERIFICATION 列出的具体证据(实跑命令输出、benchmark 数字、
-GOLD oracle 对照、复现步骤),自己 re-derive 或重跑只读检查。证据对不上 = 不通过,无论 worker 怎么说。
+GOLD oracle 对照、复现步骤),自己 re-derive 或重跑。证据对不上 = 不通过,无论 worker 怎么说。
+
+#### 独立性三档(CANON [P],必须声明实际达到哪档)
+
+"独立复跑"不是一个二值词——它有三档,弱独立冒充强独立会让复验形同虚设(已观测两次:worker 自己 spawn
+一个 subagent 冒称 independent replay;repro lens 声称独立复跑但没 rebuild native,GATE 实际还是靠
+worker 的 checked-in log):
+
+```
+L1  静态复核    读 diff / grep / 看 exit code / re-derive 数字        —— 不重跑
+L2  同环境复跑  复用 worker 已建的 .venv / .so 再跑一遍               —— 未隔离构建产物
+L3  真独立      抹掉 venv + 删构建产物(.so 等)+ clean rebuild + 亲自跑 —— 唯一算"独立"
+```
+
+- **凡是判 `verified` 的复验一律锁 L3**:必须 `rm -rf` worker 的 venv、删掉所有构建产物(`*_native*.so`
+  等)、从干净树 clean rebuild、直接跑测试(不经 worker 的 wrapper)。用 worker 已建的 `.so`(L2)或只读
+  检查(L1)都**不足以**判 `verified`。
+- **worker 谱系内的"复跑"不算独立**:worker 自己、或 worker spawn 的 subagent(同 session 谱系)跑出的
+  replay 一律**不采信**;独立性来自 reviewer **另起**的执行,不是 worker 声称的。
+- **reviewer 必须在裁决里声明本次实际达到的档位**(`independence_tier` = L1 / L2 / L3 / n/a);诚实报"我
+  只做到 L2 / 没 rebuild"是**对的、要保留**——但那就**不能**给出 `verified` 级结论(见下状态机介入点)。
+  契约的 VERIFICATION 本就该把 L3 动作写死(见 `task-contracts/task.md`),逼 reviewer 做到。
 
 ## reviewer 在状态机里的两次介入(CANON [A])
 
@@ -86,10 +107,12 @@ reviewer 在线程状态机里有两个**不同**的介入点,二者职责不可
   reviewer 执行上面"三件事"的对账资源 + 审产物 + 初步独立核对,把结论写成裁决,`last_verdict`
   记到看板(`board.py upsert-thread --last-verdict ...`),协调器据此把 state 置 `reviewed`。
   此处**不**改代码、**不** commit。
-- **`committed -> verified`(独立复验)**:worker 工作已 commit 到自己分支(`committed`,只保证
+- **`committed -> verified`(独立复验,**锁 L3**)**:worker 工作已 commit 到自己分支(`committed`,只保证
   durability,非 merge 非 push)后,reviewer 在**该 committed 分支的 worktree 上独立复跑** VERIFICATION
-  列出的测试 / 命令 / oracle 对照——跑通过才置 `verified`,跑不过或证据对不上则不进 `verified`(回
-  `continue` / `escalate`)。这是"不信 worker 自述"的硬复验,对应下面"3) 独立复验"。
+  列出的测试 / 命令 / oracle 对照,且必须达到 **L3**(抹 venv + 删 `.so` + clean rebuild + 亲自跑,
+  CANON [P])——L3 通过才置 `verified`;只做到 L1 / L2、或达不到 L3、或证据对不上,则**不进 `verified`**
+  (回 `continue` / `escalate`,并在 `independence_tier` 如实报实际档位)。这是"不信 worker 自述"的硬
+  复验,对应上面"3) 独立复验"。
   注:阶段化 reap 在 `verified` 才 reap 会话置 `session-reaped`、保留 worktree+分支待人类 merge(CANON [B])。
 
 ## 反捏造硬规则

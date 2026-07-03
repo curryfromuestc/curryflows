@@ -20,8 +20,9 @@
 
 与 `board/` 同级,已封每线程契约落在 `<project>/.curryflows/contracts/<thread-id>.md`——
 即 `task-contracts/task.md` 填好后封存的副本,一线程一份;`threads.jsonl` 的 `contract` 字段指向它。
-`seal-contract` 前置校验 = `board.py validate-contract --file <path>`(fail-closed:7 个必填字段齐且
-非空——`outcome`、`verification`、`constraints`、`boundaries`、`iteration`、`budget`、`blocked_stop`)。
+`seal-contract` 前置校验 = `board.py validate-contract --file <path>`(fail-closed:8 个必填字段齐且
+非空——`outcome`、`verification`、`constraints`、`boundaries`、`iteration`、`budget`、`blocked_stop`、
+`preconditions`)+ environment-precondition dry-run(`precondition-dryrun.sh`,CANON [O])。
 
 `dashboard.html` 是确定性渲染产物(自包含 HTML,浅色学术配色),不手写:
 

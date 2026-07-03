@@ -108,6 +108,13 @@ worker=codex `/goal`、reviewer=Claude opus,天生跨模型。但若某线程的
 
 这套机制把人类决策队列过滤到极少数。reviewer 的反捏造 + 独立复验职责见 `reviewer-spec.md`。
 
+**两条把"环境 / 独立性验证前移"的硬规则**:**seal 前 environment-precondition dry-run(CANON [O])**——
+契约声明的环境前提(baseline 绿 / venv 可装 / 预期 drift)在 seal 前由 seal-gate 在一个 throwaway
+worktree 上真跑(`scripts/precondition-dryrun.sh`),不成立即不予封定,把"契约假设了没验证过的前提"挡在
+seal 前而非 worker STEP-0;**独立复验锁 L3(CANON [P])**——`committed→verified` 的独立复跑必须抹 venv +
+删 `.so` + clean rebuild + 亲自跑,reviewer 声明实际达到的档位(L1/L2/L3),弱独立冒充强独立不认。见
+`reviewer-spec.md` / `task-contracts/task.md`。
+
 ---
 
 ## 4. barrier 模型(异步、非阻断)

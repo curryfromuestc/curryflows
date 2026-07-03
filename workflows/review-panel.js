@@ -8,8 +8,10 @@
 //
 // 调用:Workflow({ scriptPath: '<skillDir>/workflows/review-panel.js', args: {
 //   board, skillDir, projectDir,
-//   threads: [{ thread_id, worktree, branch, codex_session, contract, worker_model }]
+//   threads: [{ thread_id, worktree, branch, codex_session, contract, worker_model, state }]
 // }})
+// `state` (board thread state, e.g. running/idle/committed) lets the repro lens know
+// whether this is a progress review (L1/L2 ok) or a committed->verified pass (must be L3).
 //
 // 返回:{ reviews: [{thread, branch, worktree, verdict, findings, dissent, escalate, resources}], escalations: [...] }
 // 协调器据此做决策步(收敛已在 arbiter 完成、不投票),再派 operator。
@@ -60,6 +62,11 @@ const VERDICT_SCHEMA = {
     },
     dissent: { type: ['string', 'null'] },
     unverified: { type: 'array', items: { type: 'string' } },
+    // Independence tier actually achieved by this lens's replay (CANON [P]).
+    // repro lens reports L1/L2/L3; lenses that don't replay report 'n/a'.
+    // committed->verified requires L3; report honestly (L1/L2 is fine to admit,
+    // but then this lens cannot support a 'verified' conclusion).
+    independence_tier: { type: 'string', enum: ['L1', 'L2', 'L3', 'n/a'] },
     resources: {
       type: 'array',
       items: {
@@ -74,7 +81,7 @@ const VERDICT_SCHEMA = {
     },
     failed: { type: 'boolean' },
   },
-  required: ['lens', 'verdict', 'findings', 'dissent', 'unverified', 'resources', 'failed'],
+  required: ['lens', 'verdict', 'findings', 'dissent', 'unverified', 'independence_tier', 'resources', 'failed'],
 }
 
 // arbiter 的收敛回传(不投票;对照契约 ground truth 裁;裁不动 → escalate)
@@ -84,6 +91,9 @@ const FINAL_SCHEMA = {
     verdict: { type: 'string', enum: ['pass', 'continue', 'escalate'] },
     findings: { type: 'array', items: { type: 'object', additionalProperties: true } },
     dissent: { type: ['string', 'null'] },
+    // Highest independence tier the verification replay actually reached (CANON [P]).
+    // A 'verified'-supporting pass verdict on a committed thread REQUIRES L3.
+    independence_tier: { type: 'string', enum: ['L1', 'L2', 'L3', 'n/a'] },
     escalate: {
       type: 'array',
       items: {
@@ -99,7 +109,7 @@ const FINAL_SCHEMA = {
     },
     resources: { type: 'array', items: { type: 'object', additionalProperties: true } },
   },
-  required: ['verdict', 'findings', 'dissent', 'escalate', 'resources'],
+  required: ['verdict', 'findings', 'dissent', 'independence_tier', 'escalate', 'resources'],
 }
 
 function workerIsCodex(t) {
@@ -113,6 +123,7 @@ function lensPrompt(t, lens) {
     '不改任何文件、不操作 tmux。把巨型 transcript 隔离在你自己上下文里,只回蒸馏裁决。',
     '',
     '被审线程:thread_id=' + t.thread_id + ' worktree=' + t.worktree + ' branch=' + t.branch +
+      ' state=' + (t.state || '?') +
       ' codex_session=' + (t.codex_session || 'null') + ' worker_model=' + (t.worker_model || 'codex'),
     '已封契约(先读,这是判据 ground truth):' + (t.contract || (PROJECT + '/.curryflows/contracts/' + t.thread_id + '.md')),
     '',
@@ -121,10 +132,16 @@ function lensPrompt(t, lens) {
       ' --board ' + BOARD + '/threads.jsonl`,把 UNREGISTERED / RUNAWAY-SUSPECT / 孤儿 worktree / 可回收 填入 resources[]。',
     '2) 审产物:读 `git -C ' + t.worktree + ' diff main...HEAD` 与 codex transcript,按本 lens(' + lens +
       ')对照契约审 drift / 捏造 / 越界 / 不变量 / 预算停点 / barrier。',
-    '3) 独立复验:不信 worker 自述,对照契约 VERIFICATION 自己重跑只读检查 / re-derive;证据须指向 checked-in artifact 路径。',
+    '3) 独立复验(不信 worker 自述):对照契约 VERIFICATION 自己重跑;证据须指向 checked-in artifact 路径。',
+    '   **独立性三档(CANON [P]),必须在 independence_tier 如实声明本次实际达到哪档**:',
+    '   L1=只读复核/re-derive(不重跑);L2=复用 worker 已建的 venv/.so 再跑;L3=抹掉 venv + 删构建产物(.so)+ clean rebuild + 亲自跑。',
+    '   - 只有 repro lens 需真跑复验;不做复验的 lens 一律填 independence_tier="n/a"。',
+    '   - **若本线程 state=committed(正在判 committed→verified),repro lens 必须做到 L3**——达不到 L3 就不能给支持 verified 的 pass,',
+    '     如实报实际档位并回 continue/escalate。诚实报"我只到 L2/没 rebuild"是对的,但不得据此判 verified。',
+    '   - **worker 自己或 worker spawn 的 subagent(同谱系)跑的 replay 一律不采信**;独立性来自你另起的执行。',
     '',
     'verdict: pass(本 lens 通过) / continue(需继续) / escalate(真分歧或契约缺口,另给 finding) / runaway(发现 runaway 资源)。',
-    'dissent 不许省略(无则填 null);unverified 强制如实列出。禁止绿洗。',
+    'dissent 不许省略(无则填 null);unverified 强制如实列出;independence_tier 必填。禁止绿洗。',
   ].join('\n')
 }
 
@@ -138,7 +155,7 @@ function codexLensPrompt(t) {
     '被审线程 thread_id=' + t.thread_id + ',契约=' + (t.contract || (PROJECT + '/.curryflows/contracts/' + t.thread_id + '.md')) + '(先让 codex 读它当判据)。',
     '',
     '硬规则:codex-review.sh 非零退出 → 返回 {lens:"codex", verdict:"failed", failed:true, findings:[]},**严禁捏造 findings**。',
-    'lens 填 "codex";dissent 不许省略(无则 null);unverified 如实列。',
+    'lens 填 "codex";dissent 不许省略(无则 null);unverified 如实列;independence_tier 填 "n/a"(codex 腿做 diff 审核、不跑 L3 复验)。',
   ].join('\n')
 }
 
@@ -154,6 +171,7 @@ function arbiterPrompt(t, lensVerdicts) {
     '- 多 lens 一致且契约可判 → 给出 verdict(pass/continue)。',
     '- 真分歧 / 契约缺口,对照 ground truth 裁不动 → verdict=escalate,并在 escalate[] 给 {title, divergence, evidence(路径), recommendation(必须引用契约/权威依据)}。',
     '- 把各 lens 的 resources 合并去重到 resources[]。dissent 保留(无则 null)。禁止绿洗。',
+    '- independence_tier 填各 lens 复验实际达到的**最高档**(无人复验则 "n/a");**若本线程 state=committed(判 committed→verified),必须 L3 才能给 pass**——repro lens 未达 L3 则回 continue/escalate,不得判 verified(CANON [P])。',
     '注意:若任一 lens failed=true(如 codex 腿脚本失败),如实在 dissent / findings 反映,不得当作通过。',
   ].join('\n')
 }

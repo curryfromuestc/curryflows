@@ -96,7 +96,8 @@ commit 完把 `{thread_id, branch, commit}` 回传;协调器用 `board.py upsert
 
 ```bash
 git -C <worktree> rebase <main-ref>                          # rebase 到最新 main
-# 重跑该线程契约的 VERIFICATION(独立复跑);绿才继续
+# 重跑该线程契约的 VERIFICATION,**L3 独立**(CANON [P]):抹掉 venv + 删构建产物(.so)+ clean
+# rebuild + 亲自跑(不复用 worker 已建的 .so、不经 worker 的 wrapper);绿才继续
 git -C <main-checkout> merge --no-ff curryflows/<thread-id>  # 合入本地 main(可 revert)
 ```
 

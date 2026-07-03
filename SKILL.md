@@ -131,6 +131,13 @@ reviewer 必须是 codex 腿(`scripts/codex-review.sh`)——此时 codex-review
 否则审核退化为单模型、跨模型保证作废。协调器必须保证 reviewer 模型集合里存在与 worker 不同的模型。
 reviewer 的反捏造 / 独立复验职责见 `references/reviewer-spec.md`。
 
+**把环境 / 独立性验证前移(两条硬规则)**:**seal 前 environment-precondition dry-run(CANON [O])**——
+契约的 `preconditions`(baseline 绿 / venv 可装 / 预期 drift)在 seal 前由 seal-gate 用
+`scripts/precondition-dryrun.sh` 在 throwaway worktree 上真跑,不成立即不封,挡在 worker STEP-0 之前;
+**独立复验锁 L3(CANON [P])**——`committed→verified` 必须抹 venv + 删 `.so` + clean rebuild + 亲自跑,
+reviewer 声明实际达到的独立性档位,worker 自己 / 自 spawn 的 replay 不算独立。见 `references/reviewer-spec.md`、
+`task-contracts/task.md`。
+
 ## 综合看板(HTML,启动即 serve)
 
 每个项目的运行态落在 `<project>/.curryflows/`:`board/threads.jsonl`(线程台账)、

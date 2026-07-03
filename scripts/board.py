@@ -63,7 +63,7 @@ BARRIERS = (
 )
 CONTRACT_REQUIRED = (
     "outcome", "verification", "constraints", "boundaries",
-    "iteration", "budget", "blocked_stop",
+    "iteration", "budget", "blocked_stop", "preconditions",
 )
 
 
@@ -332,7 +332,9 @@ def cmd_validate_contract(args):
             + ", ".join(missing) + "\n"
         )
         return 1
-    sys.stderr.write("contract OK: all 7 required fields present\n")
+    sys.stderr.write(
+        f"contract OK: all {len(CONTRACT_REQUIRED)} required fields present\n"
+    )
     print(args.file)
     return 0
 

@@ -18,7 +18,7 @@ curryflows 默认不阻塞:产生疑问 → 就地跑跨模型 review → 一致
 
 | barrier | 含义 | 触发处 |
 |---|---|---|
-| `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头** | 起 worker 之前(封定目标契约) |
+| `seal-contract` | 契约封定点(plan-tree 交叉评审 + 人封),在流程**开头**;封前过两道门:`validate-contract`(8 字段文本门)+ environment-precondition dry-run(CANON [O],在 throwaway worktree 上真跑 `preconditions`) | 起 worker 之前(封定目标契约) |
 | `merge-main` | **实质退役(CANON [L])**:`verified` 即自动 rebase + 重跑验证 + 合;冲突 / 验证回归由 operator 自动修,**不 post**;仅解决中暴露真分歧才走 `model-divergence` | 几乎不用 |
 | `outward-irreversible` | 对外不可逆操作硬闸 | 协调器 / worker 遇不可逆动作 |
 | `model-divergence` | 跨模型真分歧 / 契约缺口,reviewer escalate、协调器裁不动 | reviewer 裁决 → 协调器收敛 |
