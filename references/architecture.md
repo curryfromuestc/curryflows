@@ -132,6 +132,10 @@ CANON [L]**);另有 **seal-contract** 在开头封定 worker 的目标契约(pla
 
 - 每个长跑 worker = **独立分支 + 独立 worktree**(默认 base `~/.cache/curryflows/worktrees/<project>/<thread-id>`,可配)。
 - worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。
+- **调度流水线(CANON [M])**:契约 scoping 与在途执行重叠(双水位:in-flight / sealed-ready 低于并发
+  水位即补 launch / 补 scoping,绝不等上一波收官);无真依赖切片 base 启动时的 main、不等在途线程
+  merged,真依赖可 base 依赖线程的 committed 分支提前起;线程就绪即单独推进整条 commit→verify→merge
+  链,绝不整波同步。权威见 `coordinator.md`「调度纪律」。
 - 合 main **自动化**(CANON [L]):`verified` 后协调器串行(一次一个)rebase 最新 main + 重跑验证,
   **绿则自动合(→ merged)**;冲突 / 验证回归由 operator 自动修(worktree 内 resolve + 重跑,CANON [J]),
   循环到绿再合、不升人类,唯真·跨模型分歧走 model-divergence。

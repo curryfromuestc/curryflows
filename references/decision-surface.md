@@ -42,7 +42,7 @@ barrier 是"该不该停下等人"的闸;**启动决策不在其列**。当 curr
 
 每 tick 对每条待推进项判一次,二选一:
 
-- **无依赖 / 无需真决策**——选下一片 / 下一批 worker、推进节奏、并行编排、契约可自动封定的——**直接推进,不问不停**:按 plan / 北极星自主选下一波,seal(过 `validate-contract`)+ 起 worker(fail-open,CANON [I])。
+- **无依赖 / 无需真决策**——选下一片 / 下一批 worker、推进节奏、并行编排、契约可自动封定的——**直接推进,不问不停**:按 plan / 北极星自主选下一波,seal(过 `validate-contract`)+ 起 worker(fail-open,CANON [I]);且按 CANON [M] 流水线化——scoping 与在途执行重叠、双水位补货、绝不等上一波收官(权威见 `coordinator.md`「调度纪律」)。
 - **有真决策**——对外不可逆、跨模型真分歧、外部阻塞(env / conda ToS 等)、需人定的 ABI / 编码选择(**合 main 已自动化,仅验证失败才升,见 CANON [L]**)——`board.py post-decision` 进 `decisions.jsonl`(带 `recommendation` + `options`),把**该线程**置 `blocked-human`,摘要给指针;**只 hold 该线程,其余线程照推**。
 
 **混合波**:把可推进的部分立刻起,只把需决策的部分入队——**绝不因为一波里有一项要决策就把整波停下来问**(已观测反例:把「Merge(真 barrier)」和「Next slice(无依赖)」捆进同一次 AskUserQuestion,整波停等)。若某 tick 确实无任何可推进项(全卡在 open 决策上),则 **park**(Monitor + ScheduleWakeup)等人类回复事件,**而非弹窗**。

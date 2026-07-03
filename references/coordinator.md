@@ -90,6 +90,9 @@ Workflow({ scriptPath: "<skillDir>/workflows/review-panel.js", args: {
   validate-contract --file ./.curryflows/contracts/<thread-id>.md`(fail-closed:7 个必填字段齐且非空
   ——outcome、verification、constraints、boundaries、iteration、budget、blocked_stop;校验不过不得起
   worker)。
+- **补货与水位(CANON [M] 硬项)**:in-flight(`running`)低于并发水位且 sealed-ready 池非空 → 本 tick
+  **必须**补 launch 至水位;sealed-ready 池低于水位 → 本 tick **必须**起(或续)下一批 scoping,与在途
+  worker 并行、绝不等上一波收官。线程就绪即单独推进,绝不等波友(权威定义见下「调度纪律(CANON [M])」)。
 
 barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的**两类**——对外不可逆、model-divergence;
 **合 main 已自动化(CANON [L]:`verified` 即自动 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;
@@ -122,9 +125,37 @@ barrier 共 4 个取值(见 `decision-surface.md`):运行期升人类的**两类
 
 ### 5) park 或 continue
 
-- 若仍有就绪线程或待处理项 → 不 park,继续下一个 tick;
+- 若仍有就绪线程、待处理项,或**水位欠账**(CANON [M]:in-flight / sealed-ready 低于并发水位且有活
+  可补)→ 不 park,继续下一个 tick;
 - 若无就绪事项 → arm 一个 Monitor(等线程完成 / 人类回复事件),并 ScheduleWakeup 在 1200–1800s 后
   再唤醒一次,然后停下释放上下文。被事件或定时唤醒后,从第 1 步重新开始。
+
+## 调度纪律(CANON [M]):流水线推进,绝不整波同步
+
+> 动机(已观测):一次实现战役峰值并发仅 4-5、约一半时间 ≤1 个 worker 在跑、波间出现 2h20m 零并发
+> 空窗——契约只在上一波基本清完后才开始 scoping,sealed-ready 池永远空,worker 池饿死。瓶颈不是
+> 并发上限,是契约供给。本节为权威定义,`SKILL.md` / `architecture.md` / `operator-spec.md` /
+> `decision-surface.md` 交叉引用。
+
+**[M1] 双水位(供给责任)**:并发水位 = 并发上限(默认 4,按预算 / 机器可配)。每 tick 决策必查:
+
+- in-flight(`running`)低于水位 且 sealed-ready 池非空 → 本 tick **必须**补 launch 至水位;
+- sealed-ready 池(已封契约、随时可起)低于水位 → 本 tick **必须**起(或续)下一批 scoping——
+  scoping / 对抗 seal-gate 是 Workflow / subagent 的活,与在途 worker 天然并行、不占协调器上下文,
+  **绝不等上一波收官再备货**。
+
+**[M2] base 策略(依赖不拍平成波序)**:
+
+- 无真依赖的切片:base 用**启动时的 main**,绝不等任何在途线程 merged——合并期 main 前进造成的
+  漂移由 CANON [L](串行 rebase + 重验)兜底;
+- 有真依赖的切片:可 base **依赖线程的 committed 分支**提前启动,依赖 merged 后 rebase 收敛,
+  不必等它 merged;
+- 真依赖 = 本切片的编译 / 测试 / 产出需要依赖线程的产物才能进行;"想 base 最新 main"不是依赖。
+
+**[M3] per-thread 推进(wave 只是报告用语)**:线程一到 `idle`,下个 tick 就把**它自己**推过
+review → commit → verify → merge 全链条,绝不等同批线程到齐再批处理(已观测:线程审定"干完"后
+拖 1 小时才 merged,滞后期间无新 worker 补位)。合 main 仍串行(CANON [L]),但合并队列按线程就绪
+顺序排,不按波;"wave"可留在摘要里当叙事标签,**不得**成为调度单元或同步屏障。
 
 ## worker 生命周期
 
@@ -250,8 +281,12 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
    board.py upsert-thread 把线程置 blocked-human。**绝不 AskUserQuestion**:无依赖的下一波直接推进,只把
    需决策项入队 + hold 该线程、其余照推;混合波推进可推进部分、只入队需决策部分(CANON [K])。
    落地人类已回复决策项(board.py resolve-decision)。runaway(UNREGISTERED / RUNAWAY-SUSPECT /
-   孤儿 worktree)→ 标记软停 + post 决策项,且本 tick 不扩张 codex。标出可回收集。对 state=ready 线程
-   定下分支/worktree/目标契约(尊重并发上限);起 worker 前契约副本
+   孤儿 worktree)→ 标记软停 + post 决策项,且本 tick 不扩张 codex。标出可回收集。**调度水位(CANON
+   [M],硬项)**:in-flight 低于并发水位(=并发上限,默认 4)且有 sealed-ready 线程 → 本 tick 必须补
+   launch 至水位;sealed-ready 池低于水位 → 本 tick 必须并行起/续下一批 scoping,绝不等上一波收官;
+   无真依赖切片 base 启动时的 main(漂移由 CANON [L] rebase 兜底)、真依赖可 base 依赖线程 committed
+   分支提前起;线程一到 idle 就单独推完 commit→verify→merge,绝不等波友,wave 只是叙事标签。
+   对 state=ready 线程定下分支/worktree/目标契约(尊重并发上限);起 worker 前契约副本
    .curryflows/contracts/<thread-id>.md 必过 board.py validate-contract。所有看板写入一律走
    scripts/board.py,**绝不手编 / 截断 / `>` jsonl**(破坏性操作前先读内容——已观测:未看就清空毁掉
    durable 历史)。
@@ -266,8 +301,8 @@ Workflow / subagent,小任务也照此(CANON [J])。**绝不 `AskUserQuestion`**
    <tick.json> 追加 ticks.jsonl**(备好数据文件再调,绝不手 append)。看板 HTML 由常驻 serve-board 实时
    渲染;向我回一条清晰不糊弄的摘要(每线程状态/进展/预算余额、
    裁决含异议、未验证/风险/越界、待决策项、本 tick 回收的资源),完整内容只给指针。
-5) park 或 continue:有就绪事项就继续;否则 arm Monitor 等线程完成/人类回复,ScheduleWakeup
-   1200-1800s 后再唤醒,然后停下省上下文。
+5) park 或 continue:有就绪事项或水位欠账(CANON [M])就继续;否则 arm Monitor 等线程完成/人类回复,
+   ScheduleWakeup 1200-1800s 后再唤醒,然后停下省上下文。
 
 硬闸:运行期**两类**(默认不阻断推进,人类异步处理)——对外不可逆、model-divergence;**合 main 自动化
 (CANON [L]:`verified` 即 operator 串行 rebase + 重跑验证 + 合;冲突 / 验证回归 operator 自动修、不升,唯真·跨模型分歧走 model-divergence)**;另有
