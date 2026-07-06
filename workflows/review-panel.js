@@ -10,6 +10,9 @@
 //   board, skillDir, projectDir,
 //   threads: [{ thread_id, worktree, branch, codex_session, contract, worker_model, state }]
 // }})
+// threads[] 的每个元素必须是上述完整对象——不要传裸 thread_id 字符串数组。生成 args 的
+// 单一事实源是 `python3 <skillDir>/scripts/board.py panel-args --board <board> --threads id1,id2`,
+// 它直接从 threads.jsonl 取全字段,协调器不要手拼。
 // `state` (board thread state, e.g. running/idle/committed) lets the repro lens know
 // whether this is a progress review (L1/L2 ok) or a committed->verified pass (must be L3).
 //
@@ -36,6 +39,29 @@ const PROJECT = A.projectDir || '.'
 
 if (!THREADS.length) {
   return { reviews: [], escalations: [], note: 'no threads to review' }
+}
+
+// Fail-fast 派发校验(事故教训 wf_3a62dfb1-a14:threads 被传成裸 id 字符串数组,
+// 所有模板变量插值成字面量 "undefined",5 个 agent / 206K tokens 全部报废)。
+// 校验成本 ~0,必须发生在 spawn 之前:任何一项不合格,整个面板拒绝启动。
+const REQUIRED_THREAD_FIELDS = ['thread_id', 'worktree', 'branch', 'contract']
+const badThreads = THREADS.map((t, i) => {
+  if (t === null || typeof t !== 'object' || Array.isArray(t)) {
+    return { index: i, got: typeof t === 'string' ? 'string "' + t + '"' : String(t), missing: REQUIRED_THREAD_FIELDS }
+  }
+  const missing = REQUIRED_THREAD_FIELDS.filter((k) => typeof t[k] !== 'string' || !t[k].trim())
+  return missing.length ? { index: i, got: 'object', missing } : null
+}).filter(Boolean)
+if (badThreads.length) {
+  return {
+    reviews: [],
+    escalations: [],
+    error: 'input-error: threads[] 每个元素必须是含非空字符串字段 ' + REQUIRED_THREAD_FIELDS.join('/') +
+      ' 的完整对象(另有 codex_session/worker_model/state)。用单一事实源重新生成:' +
+      'python3 ' + (SKILL || '<skillDir>') + '/scripts/board.py panel-args --board ' + (BOARD || '<board>') +
+      ' --threads <id1,id2,...>;本面板未启动任何 agent。',
+    badThreads,
+  }
 }
 
 // reviewer 视角(lens);每个 lens 一个独立、隔离上下文的 reviewer

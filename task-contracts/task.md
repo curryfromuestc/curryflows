@@ -25,7 +25,9 @@ throwaway worktree 上真跑 `preconditions` 检查全过(CANON [O])。两门都
   报告产物 / 命令输出。reviewer 用它做独立复验,**不接受 worker 自述**。凡涉及"独立复跑 / independent
   replay"的验证,**必须字面写死 L3 动作**(抹掉 venv + 删构建产物 `.so` + clean rebuild + 亲自跑),
   并要求 reviewer 报告实际达到的独立性档位——`committed → verified` 只认 L3(CANON [P],见
-  `reviewer-spec.md`)。
+  `reviewer-spec.md`)。**gate 检查在契约正文里写成字面命令**(grep 模式 / 比对条件 / 预期 exit),
+  验证以契约文本为准执行;worker 自写或改过的 gate 脚本,其 exit code 不作为 gate 通过的证据
+  (自证无效,见 `reviewer-spec.md`)。
 - `preconditions`:本契约的验证 / GATE 所**依赖的环境前提**,写成**可执行 shell 检查**的列表(每项在
   base-ref 的 fresh worktree 上须 exit 0;用 `$WT` 指代该 worktree 路径)。典型:baseline 测试计数为绿、
   venv / 工具链可安装、预期 drift 形态。seal 前由 seal-gate 在一个 throwaway worktree 上**真跑一遍**

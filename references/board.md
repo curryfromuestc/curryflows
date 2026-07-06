@@ -1,8 +1,8 @@
 # 综合看板 + 每 tick 摘要
 
-看板是 curryflows 的单一真相源(source of truth),也是人类的异步视图。协调器的上下文是一次性的
-(每 tick 全新、tick 末整体丢弃,CANON [Q]),跨 tick 状态**只**存在于看板文件。每个 tick 开始从
-看板读回状态(有界读),tick 末把变更写回——凡是"下个 tick 需要知道"的,本 tick 必须落盘。
+看板是 curryflows 的单一真相源(source of truth),也是人类的异步视图。协调器的上下文可被
+auto-compact 有损重写(CANON [Q]),跨 tick 状态**只**信看板文件。每个 tick 开始从看板读回
+状态对账(有界读),tick 末把变更写回——凡是"下个 tick 需要知道"的,本 tick 必须落盘。
 
 > 在 `SKILL.md` 的 references 索引中,本文件登记为:`board.md` — 综合看板格式
 > (threads/decisions/ticks/dashboard)+ 每 tick 摘要 schema。
@@ -20,8 +20,7 @@
   <thread-id>.md    # 已封每线程契约(task-contracts/task.md 填好的副本,一线程一份)
 <project>/.curryflows/
   tick-prompt.md    # 本项目实例化的 tick prompt(cron 心跳指向它,模板见 coordinator.md)
-  pause             # 存在即人类接管:tick 自停 + arm-rebirth 不清(删除即恢复)
-  temp/rebirth.log  # arm/fire/skip 台账(tick 步骤 0 自检活性用)
+  pause             # 存在即人类接管:tick 自停(删除即恢复)
 ```
 
 与 `board/` 同级,已封每线程契约落在 `<project>/.curryflows/contracts/<thread-id>.md`——
@@ -51,9 +50,9 @@ python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board --port 878
   **绝不用 `nohup` / `setsid` / `&` / 前台 `sleep` 去拉起或等待**——本环境 sandbox 会杀掉它们(已观测
   `exit 144`,把含后台启动的整条命令一并杀死,进程根本起不来)。Bash 后台模式由 harness 托管,跨
   tick 存活、进程退出会回调通知。
-- serve-board 是 **session 级**后台进程,**已实测跨 `/clear` 存活**(harness 托管的后台任务挂在
-  会话进程上、不挂对话;会话进程退出才随之死)。tick 步骤 0 仍顺手核活
-  (`curl --noproxy '*' … :8787` 非 200 即重拉),兜底进程崩溃 / 协调器会话重启。
+- serve-board 是 **session 级**后台进程(harness 托管的后台任务挂在会话进程上、不挂对话;
+  会话进程退出才随之死)。tick 步骤 0 仍顺手核活(`curl --noproxy '*' … :8787` 非 200 即重拉;
+  serve-board 幂等:端口上已是同看板服务则直接 exit 0),兜底进程崩溃 / 协调器会话重启。
 
 ### host 绑定:决定谁能访问(runbook 默认 0.0.0.0,暴露局域网)
 

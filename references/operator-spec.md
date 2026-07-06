@@ -1,7 +1,7 @@
 # 操作规程(协调器内联执行)
 
-操作是 curryflows tick 的第 4 步(审核 → 决策 → **操作**)。自 CANON [Q](fresh-per-tick)起,
-例行操作由**协调器在主 session 内联执行**——上下文每 tick 归零 + no-slurp 纪律使内联安全,
+操作是 curryflows tick 的第 4 步(审核 → 决策 → **操作**)。自 CANON [Q] 起,例行操作由
+**协调器在主 session 内联执行**——300K 压缩窗口 + no-slurp 纪律使内联安全,
 且省掉一次 subagent 冷启动往返(速度)。本文件是这些操作的权威规程:命令、护栏、回传字段。
 
 > 历史沿革:这些动作曾由一个独立的 operator subagent 执行;`ticks.jsonl` 记录里的 `operator`
@@ -47,8 +47,8 @@ bash <skillDir>/scripts/inject-steer.sh send cfx_<thread-id> \
 
 **关键**:codex /goal 跑在 detached tmux 里,tmux server 常驻,长跑线程归 tmux + 看板所有,
 与协调器的 tick 生命周期完全解耦。起完**当场**拿 rollout session-id 写回看板
-(`board.py upsert-thread --codex-session …`)——fresh-per-tick 下没有"稍后补登"可言,不登记
-即下 tick 被 reviewer 标 `UNREGISTERED`(见 `goal-contract.md`「启动后立即注册」)。
+(`board.py upsert-thread --codex-session …`)——上下文随时可能被压缩,没有"稍后补登"可言,
+不登记即下 tick 被 reviewer 标 `UNREGISTERED`(见 `goal-contract.md`「启动后立即注册」)。
 
 **起前必过两道 seal 门**(CANON [O],顺序执行,任一不过不得起):
 ①`board.py validate-contract --file <contract>`(8 必填字段,fail-closed);

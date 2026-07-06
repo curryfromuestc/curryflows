@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """curryflows: the sole writer of the board JSONL files.
 
-The coordinator's context is disposable (each tick starts fresh; anything that
-must survive a tick lives here), so the durable board under <board>/ is the
-source of truth. Four files are written exclusively through this CLI:
+The coordinator's context is expendable (auto-compact may rewrite it into a
+lossy summary at any point; anything that must survive lives here), so the
+durable board under <board>/ is the source of truth. Four files are written
+exclusively through this CLI:
 
   <board>/threads.jsonl    -- one record per in-flight thread (state machine)
   <board>/decisions.jsonl  -- the human-decision queue (barriers)
@@ -49,7 +50,7 @@ reappear under a fresh id.
 
 Subcommands: upsert-thread, post-decision, resolve-decision, record-tick,
 upsert-backlog, list-threads, list-decisions, list-backlog, list-ticks,
-validate-contract. Usage errors exit 64.
+validate-contract, panel-args. Usage errors exit 64.
 """
 import argparse
 import json
@@ -170,6 +171,24 @@ def cmd_upsert_thread(args):
     if args.state is not None and args.state not in STATES:
         fail(f"illegal state '{args.state}'; allowed: {', '.join(STATES)}")
 
+    # CANON [N] fail-closed guard: blocked-human means "a human decision blocks
+    # this thread", so that decision must EXIST on the decision surface first.
+    # Incident: design-scale sat "waiting on the user" for 3 days while
+    # decisions.jsonl had no corresponding item -- the user had nothing to act
+    # on. Post the decision (board.py post-decision) BEFORE blocking the thread.
+    if args.state == "blocked-human":
+        open_for_thread = [
+            r for r in read_jsonl_strict(decisions_path(args.board))
+            if r.get("status") == "open" and r.get("thread") == args.id
+        ]
+        if not open_for_thread:
+            fail(
+                f"state=blocked-human requires an OPEN decision with "
+                f"thread='{args.id}' on the board; post it first "
+                "(board.py post-decision), otherwise the wait is invisible "
+                "to the human"
+            )
+
     # map of provided CLI fields -> record keys (only set when explicitly given)
     provided = {}
     field_map = [
@@ -215,6 +234,13 @@ def cmd_upsert_thread(args):
 # post-decision
 # --------------------------------------------------------------------------- #
 def cmd_post_decision(args):
+    """Append a decision item, or -- with --reopen -- reopen an existing id IN
+    PLACE. A plain post with an id that already exists is refused fail-closed:
+    appending a second row under the same id is exactly the corruption found in
+    tick-81 (duplicate rows; resolve-decision then only updated the first, so
+    the dashboard kept showing a stale open copy). Reopen keeps one row per id,
+    preserves prior outcomes in prior_resolutions, and collapses any legacy
+    duplicate rows of that id."""
     if args.barrier not in BARRIERS:
         fail(f"illegal barrier '{args.barrier}'; allowed: {', '.join(BARRIERS)}")
     if not args.recommendation or not args.recommendation.strip():
@@ -222,8 +248,19 @@ def cmd_post_decision(args):
     if not args.evidence or not args.evidence.strip():
         fail("evidence must be non-empty")
 
-    rec = {
-        "id": args.id,
+    rows = read_jsonl_strict(decisions_path(args.board))
+    dupes = [r for r in rows if r.get("id") == args.id]
+
+    if dupes and not args.reopen:
+        fail(
+            f"decision id '{args.id}' already exists "
+            f"(status={dupes[0].get('status')}); use --reopen to reopen it "
+            "in place, or pick a new id"
+        )
+    if args.reopen and not dupes:
+        fail(f"--reopen: no existing decision with id '{args.id}'")
+
+    fresh = {
         "barrier": args.barrier,
         "thread": args.thread,
         "summary": args.summary,
@@ -233,11 +270,27 @@ def cmd_post_decision(args):
         "options": args.options.split("|") if args.options else None,
         "status": "open",
         "resolution": None,
-        "created": now_iso(),
     }
 
-    rows = read_jsonl_strict(decisions_path(args.board))
-    rows.append(rec)
+    if args.reopen:
+        rec = dupes[0]
+        history = rec.get("prior_resolutions") or []
+        for d in dupes:
+            if d.get("resolution") is not None or d.get("status") != "open":
+                history.append({
+                    "status": d.get("status"),
+                    "resolution": d.get("resolution"),
+                    "resolved": d.get("updated"),
+                })
+        rec.update(fresh)
+        rec["prior_resolutions"] = history
+        rec["reopened"] = now_iso()
+        # collapse legacy duplicate rows: keep only the first occurrence
+        rows = [r for r in rows if r.get("id") != args.id or r is rec]
+    else:
+        rec = {"id": args.id, **fresh, "created": now_iso()}
+        rows.append(rec)
+
     write_jsonl_atomic(decisions_path(args.board), rows)
     print(json.dumps(rec, ensure_ascii=False))
     return 0
@@ -251,19 +304,20 @@ def cmd_resolve_decision(args):
         fail(f"illegal status '{args.status}'; allowed: resolved, rejected")
 
     rows = read_jsonl_strict(decisions_path(args.board))
-    found = None
-    for rec in rows:
-        if rec.get("id") == args.id:
-            found = rec
-            break
-    if found is None:
+    # update EVERY row bearing the id, not just the first: legacy boards may
+    # carry duplicate rows from the pre---reopen era (tick-81 incident), and a
+    # resolution that only lands on the first copy leaves a stale open copy
+    # visible on the dashboard.
+    matched = [rec for rec in rows if rec.get("id") == args.id]
+    if not matched:
         fail(f"no decision with id '{args.id}'")
 
-    found["resolution"] = args.resolution
-    found["status"] = args.status
-    found["updated"] = now_iso()
+    for rec in matched:
+        rec["resolution"] = args.resolution
+        rec["status"] = args.status
+        rec["updated"] = now_iso()
     write_jsonl_atomic(decisions_path(args.board), rows)
-    print(json.dumps(found, ensure_ascii=False))
+    print(json.dumps(matched[0], ensure_ascii=False))
     return 0
 
 
@@ -284,6 +338,21 @@ def cmd_list_decisions(args):
     rows = read_jsonl_strict(decisions_path(args.board))
     if args.open:
         rows = [r for r in rows if r.get("status") == "open"]
+        # decision aging (computed at read time, never persisted): the surface
+        # is pull-only, so the coordinator must resurface old open decisions in
+        # its tick summary -- age_hours is the input to that nagging rule.
+        now = datetime.now(timezone.utc)
+        for rec in rows:
+            ref = rec.get("reopened") or rec.get("created")
+            if ref:
+                try:
+                    then = datetime.fromisoformat(ref)
+                    rec = dict(rec)
+                    rec["age_hours"] = round((now - then).total_seconds() / 3600, 1)
+                except ValueError:
+                    pass
+            print(json.dumps(rec, ensure_ascii=False))
+        return 0
     for rec in rows:
         print(json.dumps(rec, ensure_ascii=False))
     return 0
@@ -486,10 +555,79 @@ def cmd_record_tick(args):
     rec.setdefault("operator", {})
     if not rec.get("ts"):
         rec["ts"] = now_iso()
+    # invisible-wait tripwire: a summary that claims to be waiting on a human
+    # while the decision surface is empty is the exact failure that left
+    # design-scale blocked for 3 days with nothing for the user to act on.
+    # Warning only (not fail): the text match is heuristic.
+    if re.search(r"待用户|待人类|等人类|等待用户|等用户", summ):
+        open_count = sum(
+            1 for r in read_jsonl_strict(decisions_path(args.board))
+            if r.get("status") == "open"
+        )
+        if open_count == 0:
+            sys.stderr.write(
+                "WARNING: tick summary says waiting-on-human but the board has "
+                "0 open decisions -- post the decision in the SAME tick "
+                "(board.py post-decision) or the wait is invisible\n"
+            )
     rows = read_jsonl_strict(ticks_path(args.board))
     rows.append(rec)
     write_jsonl_atomic(ticks_path(args.board), rows)
     print(json.dumps(rec, ensure_ascii=False))
+
+
+# --------------------------------------------------------------------------- #
+# panel-args (single source of truth for review-panel.js dispatch)
+# --------------------------------------------------------------------------- #
+def cmd_panel_args(args):
+    """Emit ready-to-use args JSON for workflows/review-panel.js straight from
+    threads.jsonl. The coordinator must NOT hand-build the threads[] array:
+    incident wf_3a62dfb1-a14 hand-built it as bare id strings and burned a full
+    5-agent panel (206K tokens) reviewing literal 'undefined'. This subcommand
+    is the single source of truth -- unknown ids and records missing the fields
+    the panel needs are refused fail-closed."""
+    ids = [s.strip() for s in args.threads.split(",") if s.strip()]
+    if not ids:
+        fail("--threads requires at least one thread id", 64)
+
+    rows = read_jsonl_strict(threads_path(args.board))
+    by_id = {r.get("thread_id"): r for r in rows}
+    unknown = [i for i in ids if i not in by_id]
+    if unknown:
+        fail(f"unknown thread id(s): {', '.join(unknown)}")
+
+    board_abs = os.path.abspath(args.board)
+    skill_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    project_dir = os.path.abspath(args.project) if args.project else \
+        os.path.dirname(os.path.dirname(board_abs))
+
+    threads, incomplete = [], []
+    for tid in ids:
+        r = by_id[tid]
+        t = {
+            "thread_id": tid,
+            "worktree": r.get("worktree"),
+            "branch": r.get("branch"),
+            "codex_session": r.get("codex_session"),
+            "contract": r.get("contract"),
+            "worker_model": r.get("worker_model") or "codex",
+            "state": r.get("state"),
+        }
+        lacking = [k for k in ("worktree", "branch", "contract")
+                   if not (t.get(k) or "").strip()]
+        if lacking:
+            incomplete.append(f"{tid}: missing {', '.join(lacking)}")
+        threads.append(t)
+    if incomplete:
+        fail("board record(s) incomplete for panel dispatch: "
+             + "; ".join(incomplete))
+
+    print(json.dumps(
+        {"board": board_abs, "skillDir": skill_dir,
+         "projectDir": project_dir, "threads": threads},
+        ensure_ascii=False,
+    ))
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -527,6 +665,9 @@ def build_parser():
     p.add_argument("--evidence", required=True)
     p.add_argument("--divergence")
     p.add_argument("--options", help='pipe-separated, e.g. "a|b|c"')
+    p.add_argument("--reopen", action="store_true",
+                   help="reopen an existing decision id in place (keeps one "
+                        "row per id; prior outcome moves to prior_resolutions)")
     p.set_defaults(func=cmd_post_decision)
 
     p = sub.add_parser("resolve-decision", help="resolve/reject a decision")
@@ -589,6 +730,16 @@ def build_parser():
                        help="fail-closed seal-contract precondition")
     p.add_argument("--file", required=True, help="sealed contract file path")
     p.set_defaults(func=cmd_validate_contract)
+
+    p = sub.add_parser("panel-args",
+                       help="emit review-panel.js args JSON from threads.jsonl "
+                            "(single source of truth; never hand-build threads[])")
+    add_board(p)
+    p.add_argument("--threads", required=True,
+                   help="comma-separated thread ids to review")
+    p.add_argument("--project",
+                   help="project dir override (default: board's grandparent)")
+    p.set_defaults(func=cmd_panel_args)
 
     return ap
 

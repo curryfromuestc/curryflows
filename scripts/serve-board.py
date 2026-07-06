@@ -80,6 +80,25 @@ def main():
             make_handler(os.path.abspath(args.board), args.recent_ticks, args.refresh),
         )
     except OSError as e:
+        # Idempotent start: if the port is already held by a live board server,
+        # that IS the desired end state -- print its URL and exit 0 instead of
+        # failing. (Coordinator ops retry `serve-board.py` each tick; exit 70
+        # here used to read as "dashboard won't start" when it was just already
+        # running.) Anything else on the port stays a hard error.
+        probe = f"http://{args.host or '127.0.0.1'}:{args.port}/"
+        try:
+            import urllib.request
+            # empty ProxyHandler: env proxies (http_proxy=...) would otherwise
+            # route a 127.0.0.1 probe through the proxy and always fail
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(probe, timeout=3) as resp:
+                body_head = resp.read(4096).decode("utf-8", errors="replace")
+                if resp.status == 200 and "curryflows" in body_head:
+                    sys.stderr.write(f"already serving at {probe} (reusing)\n")
+                    print(probe)
+                    return 0
+        except Exception:
+            pass
         sys.stderr.write(f"error: cannot bind {args.host}:{args.port}: {e}\n")
         return 70
 
