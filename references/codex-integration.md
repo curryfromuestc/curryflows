@@ -2,7 +2,7 @@
 
 curryflows 对 codex 的所有操作都走 tmux。**send-keys 的边界按 pane 状态划分**:刚起的
 detached pane 是普通 shell,所以用 `tmux send-keys` / `tmux new-session "<cmd>"` 在该 shell
-pane 上启动 codex 二进制是允许的(`codex-review.sh` 与 operator 起会话正是这么做);但**一旦
+pane 上启动 codex 二进制是允许的(`codex-review.sh` 与协调器起会话正是这么做);但**一旦
 codex TUI 起来,之后所有输入必须走 `scripts/inject-steer.sh`,绝不对 live codex TUI 手搓 raw
 `tmux send-keys`**。理由是 live TUI 的渲染时序是 racy 的,一个已观测到的失败模式是大段 paste
 之后第一个 Enter 静默不生效;手搓 send-keys 没有「输入落地校验 + Enter 提交校验 + 有界重试」,
@@ -11,8 +11,8 @@ Escape 软停走 `scripts/interrupt-target.sh`,同样不对 live TUI 手搓 raw 
 
 ## CANON [H]:codex 启动纪律(fail-closed,与 /loop 是否在跑解耦)
 
-curryflows 上下文里的**任何** codex 调用——无论协调器是否在 `/loop` 模式、无论是 tick 内的
-operator 动作还是协调器临时起一条有界 review——**只能经 tmux 启动,并由一个 subagent 监控到完成**。
+curryflows 上下文里的**任何** codex 调用——无论协调器是否在 `/loop` 心跳里、无论是 tick 内的
+操作步动作还是临时起一条有界 review——**只能经 tmux 启动,并由一个 subagent 监控到完成**。
 这条规则与 `/loop` 是否启动**解耦**:即使在尚未起协调器的 inline 场景,起 codex 也照此办理(补上
 "`/loop` 没起 → codex 退回脆弱路径"这个洞)。
 
@@ -39,7 +39,7 @@ operator 动作还是协调器临时起一条有界 review——**只能经 tmux
   `STABLE_NEEDED` 次不变才判完成,再把蒸馏结论回传协调器。`codex-review.sh` 已内建这套文件稳定检测
   (见下),subagent 全程在它的大上下文里盯,结束随它消亡。**这正是全局纪律「codex review 用一个
   subagent 启动 + 启动后该 subagent 实时监控」的落地。**
-- **自驱 /goal worker**:operator 把它**detach 起在 tmux 里**(长跑、跨天存活,不能让一个 subagent
+- **自驱 /goal worker**:协调器把它**detach 起在 tmux 里**(长跑、跨天存活,不能让一个 subagent
   阻塞几天),随后**每 tick 由 reviewer**(`review-panel.js`)读其交付文件 + transcript 判进度 / 完成。
   监控仍在 subagent(reviewer)里,不在协调器。
 

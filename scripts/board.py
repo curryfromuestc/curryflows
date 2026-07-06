@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """curryflows: the sole writer of the board JSONL files.
 
-The coordinator's own context is unreliable (it parks, compacts, spans wake-ups),
-so the durable board under <board>/ is the source of truth. Three files are written
-exclusively through this CLI:
+The coordinator's context is disposable (each tick starts fresh; anything that
+must survive a tick lives here), so the durable board under <board>/ is the
+source of truth. Four files are written exclusively through this CLI:
 
   <board>/threads.jsonl    -- one record per in-flight thread (state machine)
   <board>/decisions.jsonl  -- the human-decision queue (barriers)
   <board>/ticks.jsonl      -- append-only durable tick history (record-tick)
+  <board>/backlog.jsonl    -- task supply queue (CANON [M]; keeps rejection memory)
 
 NEVER hand-edit threads.jsonl / decisions.jsonl / ticks.jsonl. A hand-edit easily corrupts a
 line, and render-board.py silently skips malformed lines -- so a corrupted line
@@ -32,15 +33,23 @@ Authoritative thread state machine (CANON [A]):
   reviewed       reviewer finished, last_verdict recorded
   committed      work committed to its own branch (durability; not merge, not push)
   verified       independent re-run on the committed branch worktree passed
-  session-reaped codex tmux session reaped (process freed); worktree+branch kept for human merge
+  session-reaped codex tmux session reaped early (rare; the normal flow keeps the
+                 session alive until merged so merge conflicts can be steered
+                 back to the live worker, see CANON [B])
   merged         merged to main (terminal)
   rolled-back    discarded (terminal)
 
 Decision barriers (CANON [E]): seal-contract, merge-main, outward-irreversible,
 model-divergence.
 
+Backlog statuses (CANON [M]): candidate -> scoping -> sealed-ready -> launched,
+or rejected. Rejected items are never deleted (rejection memory), and dedup_key
+is unique across all items, so a previously rejected task cannot silently
+reappear under a fresh id.
+
 Subcommands: upsert-thread, post-decision, resolve-decision, record-tick,
-list-threads, list-decisions, validate-contract. Usage errors exit 64.
+upsert-backlog, list-threads, list-decisions, list-backlog, list-ticks,
+validate-contract. Usage errors exit 64.
 """
 import argparse
 import json
@@ -60,6 +69,9 @@ STATES = (
 )
 BARRIERS = (
     "seal-contract", "merge-main", "outward-irreversible", "model-divergence",
+)
+BACKLOG_STATUSES = (
+    "candidate", "scoping", "sealed-ready", "launched", "rejected",
 )
 CONTRACT_REQUIRED = (
     "outcome", "verification", "constraints", "boundaries",
@@ -140,6 +152,10 @@ def decisions_path(board):
 
 def ticks_path(board):
     return os.path.join(board, "ticks.jsonl")
+
+
+def backlog_path(board):
+    return os.path.join(board, "backlog.jsonl")
 
 
 def fail(msg, code=1):
@@ -269,6 +285,110 @@ def cmd_list_decisions(args):
     if args.open:
         rows = [r for r in rows if r.get("status") == "open"]
     for rec in rows:
+        print(json.dumps(rec, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# upsert-backlog / list-backlog (task supply queue, CANON [M])
+# --------------------------------------------------------------------------- #
+def cmd_upsert_backlog(args):
+    """Create/merge a backlog item. The backlog is the durable task-supply queue
+    behind the per-tick replenish step (CANON [M]): candidates go in, sealed-ready
+    items are launchable, rejected items STAY as rejection memory. Two fail-closed
+    guards give the memory teeth:
+
+      * a NEW item whose dedup_key collides with any existing item is refused --
+        re-proposing a previously seen (possibly rejected) task must reuse that
+        item's backlog_id, so its history stays attached and visible;
+      * status=rejected requires a reject_reason (given now or already on record)
+        -- a rejection that cannot say why cannot stop future re-proposals.
+    """
+    if args.status is not None and args.status not in BACKLOG_STATUSES:
+        fail(f"illegal status '{args.status}'; allowed: {', '.join(BACKLOG_STATUSES)}")
+
+    provided = {}
+    for key in ("summary", "status", "dedup_key", "rationale",
+                "contract", "thread", "reject_reason"):
+        val = getattr(args, key)
+        if val is not None:
+            provided[key] = val
+
+    rows = read_jsonl_strict(backlog_path(args.board))
+    found = None
+    for rec in rows:
+        if rec.get("backlog_id") == args.id:
+            found = rec
+            break
+
+    if found is None:
+        if not provided.get("summary", "").strip():
+            fail("a new backlog item requires a non-empty --summary")
+        key = provided.get("dedup_key")
+        if key:
+            for rec in rows:
+                if rec.get("dedup_key") == key:
+                    fail(
+                        f"dedup_key '{key}' already used by backlog item "
+                        f"'{rec.get('backlog_id')}' (status={rec.get('status')}); "
+                        "reuse that item's id instead of re-proposing it"
+                    )
+        rec = {"backlog_id": args.id, "status": "candidate"}
+        rec.update(provided)
+        rows.append(rec)
+    else:
+        found.update(provided)
+        rec = found
+
+    if rec.get("status") == "rejected" and not (rec.get("reject_reason") or "").strip():
+        fail("status=rejected requires --reject-reason (rejection memory must say why)")
+
+    rec["updated"] = now_iso()
+    write_jsonl_atomic(backlog_path(args.board), rows)
+    print(json.dumps(rec, ensure_ascii=False))
+    return 0
+
+
+def cmd_list_backlog(args):
+    if args.status is not None and args.status not in BACKLOG_STATUSES:
+        fail(f"illegal status '{args.status}'; allowed: {', '.join(BACKLOG_STATUSES)}")
+    rows = read_jsonl_strict(backlog_path(args.board))
+    if args.status:
+        rows = [r for r in rows if r.get("status") == args.status]
+    for rec in rows:
+        print(json.dumps(rec, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# list-ticks (bounded read of the append-only tick history)
+# --------------------------------------------------------------------------- #
+def cmd_list_ticks(args):
+    """Emit the last N tick records. ticks.jsonl is append-only and grows for a
+    campaign's whole life, so the per-tick rehydrate must never slurp the whole
+    file -- this is the bounded reader. Only the returned window is parsed and
+    validated (strictly, with real line numbers); earlier lines are not read as
+    JSON, which also keeps old corruption from blocking current ticks."""
+    if args.last is not None and args.last < 1:
+        fail("--last must be >= 1", 64)
+    path = ticks_path(args.board)
+    if not os.path.isfile(path):
+        return 0
+    with open(path, "r", errors="strict") as f:
+        numbered = [(n, ln) for n, ln in enumerate(f, start=1) if ln.strip()]
+    if args.last is not None:
+        numbered = numbered[-args.last:]
+    for lineno, line in numbered:
+        try:
+            rec = json.loads(line)
+        except Exception as exc:
+            raise ValueError(
+                f"corrupted JSONL at {path}:{lineno}: {exc}"
+            ) from exc
+        if not isinstance(rec, dict):
+            raise ValueError(
+                f"corrupted JSONL at {path}:{lineno}: not a JSON object"
+            )
         print(json.dumps(rec, ensure_ascii=False))
     return 0
 
@@ -425,6 +545,21 @@ def build_parser():
                         "{tick:int, summary:str, reviews?, decisions_made?, operator?, ts?}")
     p.set_defaults(func=cmd_record_tick)
 
+    p = sub.add_parser("upsert-backlog",
+                       help="create/merge a backlog item (task supply queue)")
+    add_board(p)
+    p.add_argument("--id", required=True, dest="id")
+    p.add_argument("--summary")
+    p.add_argument("--status",
+                   help="candidate|scoping|sealed-ready|launched|rejected")
+    p.add_argument("--dedup-key", dest="dedup_key",
+                   help="stable key of the underlying task; unique across items")
+    p.add_argument("--rationale")
+    p.add_argument("--contract", help="path to the drafted/sealed contract")
+    p.add_argument("--thread", help="thread_id once launched")
+    p.add_argument("--reject-reason", dest="reject_reason")
+    p.set_defaults(func=cmd_upsert_backlog)
+
     p = sub.add_parser("list-threads", help="dump threads.jsonl")
     add_board(p)
     p.add_argument("--open", action="store_true",
@@ -436,6 +571,19 @@ def build_parser():
     p.add_argument("--open", action="store_true",
                    help="only status=open decisions")
     p.set_defaults(func=cmd_list_decisions)
+
+    p = sub.add_parser("list-backlog", help="dump backlog.jsonl")
+    add_board(p)
+    p.add_argument("--status", help="filter by status")
+    p.set_defaults(func=cmd_list_backlog)
+
+    p = sub.add_parser("list-ticks",
+                       help="dump the last N tick records (bounded read; "
+                            "never slurps the whole append-only history)")
+    add_board(p)
+    p.add_argument("--last", type=int,
+                   help="only the last N records (also the validation window)")
+    p.set_defaults(func=cmd_list_ticks)
 
     p = sub.add_parser("validate-contract",
                        help="fail-closed seal-contract precondition")

@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """curryflows: render the consolidated board (jsonl) into a human HTML dashboard.
 
-The coordinator's context is unreliable (it parks, compacts, spans wake-ups), so
+The coordinator's context is disposable (each tick starts fresh, CANON [Q]), so
 the board files are the source of truth. This script deterministically renders
 them into one self-contained HTML file a human can open in a browser and watch:
 
   <board>/threads.jsonl    -> threads table (state, budget, codex session)
   <board>/decisions.jsonl  -> open human-decision queue
   <board>/ticks.jsonl      -> recent tick summaries (durable history)
+  <board>/backlog.jsonl    -> task supply queue (watermark + rejection memory)
 
 Output: <board>/dashboard.html (or --out). READ-ONLY w.r.t. the jsonl inputs.
 `render_html()` is importable so serve-board.py can re-render live per request.
@@ -90,6 +91,11 @@ font-weight:600;border:1px solid var(--line);white-space:nowrap}
 .b-merged{color:#fff;background:var(--good);border-color:var(--good)}
 .b-rolled-back{color:var(--muted);text-decoration:line-through}
 .b-bar{color:#fff;background:var(--warn);border-color:var(--warn)}
+.b-candidate{color:var(--muted)}
+.b-scoping{color:var(--ink);border-color:var(--warn)}
+.b-sealed-ready{color:#fff;background:var(--accent);border-color:var(--accent)}
+.b-launched{color:var(--good);border-color:var(--good)}
+.b-rejected{color:var(--muted);text-decoration:line-through}
 .tick{background:var(--panel);border:1px solid var(--line);border-radius:6px;
 padding:12px 14px;margin:10px 0}
 .tick h3{margin:0 0 8px;font-size:13px;color:var(--accent)}
@@ -185,6 +191,36 @@ def render_decisions(decisions):
     return out
 
 
+def render_backlog(backlog):
+    out = ["<h2>任务补给队列 (backlog)</h2>"]
+    if not backlog:
+        return out + ['<div class="empty">补给队列为空</div>']
+    # launchable first; rejected stay visible at the bottom (rejection memory)
+    order = {"sealed-ready": 0, "scoping": 1, "candidate": 2,
+             "launched": 3, "rejected": 4}
+    backlog = sorted(backlog, key=lambda b: (order.get(b.get("status"), 5),
+                                             str(b.get("backlog_id"))))
+    out.append("<table><thead><tr>"
+               "<th>id</th><th>status</th><th>summary</th>"
+               "<th>dedup key</th><th>rationale / reject reason</th>"
+               "<th>thread</th><th>updated</th></tr></thead><tbody>")
+    for b in backlog:
+        why = (b.get("reject_reason") if b.get("status") == "rejected"
+               else b.get("rationale"))
+        out.append(
+            "<tr>"
+            f"<td class='mono'>{esc(b.get('backlog_id'))}</td>"
+            f"<td>{_badge(b.get('status'))}</td>"
+            f"<td>{esc(b.get('summary'))}</td>"
+            f"<td class='mono'>{esc(b.get('dedup_key') or '-')}</td>"
+            f"<td>{esc(why or '-')}</td>"
+            f"<td class='mono'>{esc(b.get('thread') or '-')}</td>"
+            f"<td class='mono'>{esc(b.get('updated') or '-')}</td>"
+            "</tr>")
+    out.append("</tbody></table>")
+    return out
+
+
 def render_ticks(ticks, n):
     out = [f"<h2>最近 {n} 个 tick</h2>"]
     if not ticks:
@@ -213,16 +249,19 @@ def render_html(board, recent_ticks=5, refresh=10):
     threads = read_jsonl(os.path.join(board, "threads.jsonl"))
     decisions = read_jsonl(os.path.join(board, "decisions.jsonl"))
     ticks = read_jsonl(os.path.join(board, "ticks.jsonl"))
+    backlog = read_jsonl(os.path.join(board, "backlog.jsonl"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     open_count = sum(1 for d in decisions if d.get("status") == "open")
     running = sum(1 for t in threads if t.get("state") == "running")
+    sealed = sum(1 for b in backlog if b.get("status") == "sealed-ready")
 
     refresh_tag = (f'<meta http-equiv="refresh" content="{int(refresh)}">'
                    if refresh and refresh > 0 else "")
     body = []
     body += render_threads(threads)
     body += render_decisions(decisions)
+    body += render_backlog(backlog)
     body += render_ticks(ticks, recent_ticks)
 
     return (
@@ -231,7 +270,8 @@ def render_html(board, recent_ticks=5, refresh=10):
         f"{refresh_tag}<title>curryflows 看板</title>"
         f"<style>{CSS}</style></head><body><div class='wrap'>"
         "<h1>curryflows 综合看板</h1>"
-        f"<div class='meta'>渲染于 {now} · 在跑线程 {running} · 待决策 {open_count}</div>"
+        f"<div class='meta'>渲染于 {now} · 在跑线程 {running} · 待决策 {open_count}"
+        f" · 补给 sealed-ready {sealed}</div>"
         + "".join(body) +
         "</div></body></html>\n"
     )
