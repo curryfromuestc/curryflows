@@ -11,15 +11,16 @@ exclusively through this CLI:
   <board>/ticks.jsonl      -- append-only durable tick history (record-tick)
   <board>/backlog.jsonl    -- task supply queue (CANON [M]; keeps rejection memory)
 
-NEVER hand-edit threads.jsonl / decisions.jsonl / ticks.jsonl. A hand-edit easily corrupts a
-line, and render-board.py silently skips malformed lines -- so a corrupted line
-silently drops a thread's state. board.py is the single writer: every write is
+NEVER hand-edit threads.jsonl / decisions.jsonl / ticks.jsonl. A hand-edit
+easily corrupts a line, and every reader of the board is strict -- a single
+corrupted line fails the whole read-back -- so the board must only ever be
+written through this CLI. board.py is the single writer: every write is
 atomic (same-dir temp file + os.replace) and every illegal enum / missing
 required field is rejected fail-closed (the file is never partially written).
 
-Unlike the renderer, board.py READS strictly: a malformed JSONL line is NOT
-skipped, it raises with the offending line number, because the whole point is to
-surface corruption rather than hide it.
+board.py READS strictly: a malformed JSONL line is NOT skipped, it raises with
+the offending line number, because the whole point is to surface corruption
+rather than hide it.
 
 Authoritative thread state machine (CANON [A]):
 
@@ -50,7 +51,7 @@ reappear under a fresh id.
 
 Subcommands: upsert-thread, post-decision, resolve-decision, record-tick,
 upsert-backlog, list-threads, list-decisions, list-backlog, list-ticks,
-validate-contract, panel-args. Usage errors exit 64.
+summary, validate-contract, panel-args. Usage errors exit 64.
 """
 import argparse
 import json
@@ -238,7 +239,8 @@ def cmd_post_decision(args):
     PLACE. A plain post with an id that already exists is refused fail-closed:
     appending a second row under the same id is exactly the corruption found in
     tick-81 (duplicate rows; resolve-decision then only updated the first, so
-    the dashboard kept showing a stale open copy). Reopen keeps one row per id,
+    the decision surface kept showing a stale open copy). Reopen keeps one row
+    per id,
     preserves prior outcomes in prior_resolutions, and collapses any legacy
     duplicate rows of that id."""
     if args.barrier not in BARRIERS:
@@ -307,7 +309,7 @@ def cmd_resolve_decision(args):
     # update EVERY row bearing the id, not just the first: legacy boards may
     # carry duplicate rows from the pre---reopen era (tick-81 incident), and a
     # resolution that only lands on the first copy leaves a stale open copy
-    # visible on the dashboard.
+    # visible on the decision surface.
     matched = [rec for rec in rows if rec.get("id") == args.id]
     if not matched:
         fail(f"no decision with id '{args.id}'")
@@ -459,6 +461,64 @@ def cmd_list_ticks(args):
                 f"corrupted JSONL at {path}:{lineno}: not a JSON object"
             )
         print(json.dumps(rec, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# summary (one-line terminal surface, CANON [R] tier T0)
+# --------------------------------------------------------------------------- #
+# canonical display order of the non-terminal states NOT already carried by a
+# glyph in the fixed first segment (running/blocked-human have glyphs; the
+# terminal states merged/rolled-back are never shown).
+SUMMARY_EXTRA_STATES = (
+    "ready", "idle", "reviewed", "committed", "verified", "session-reaped",
+)
+
+
+def summary_line(threads, decisions, backlog):
+    """Build the counts portion of the `summary` line (no PAUSED suffix).
+
+    Shared with board-tui.py, which recomputes the same glyph line from its
+    already-loaded data for the header of every view."""
+    by_state = {}
+    for rec in threads:
+        state = rec.get("state")
+        by_state[state] = by_state.get(state, 0) + 1
+    open_decisions = sum(1 for r in decisions if r.get("status") == "open")
+    sealed_ready = sum(1 for r in backlog if r.get("status") == "sealed-ready")
+    line = (
+        f"cfx ▶{by_state.get('running', 0)} ⏸{by_state.get('blocked-human', 0)} "
+        f"⚑{open_decisions} ◆{sealed_ready}"
+    )
+    extras = [
+        f"{s}:{by_state[s]}" for s in SUMMARY_EXTRA_STATES if by_state.get(s)
+    ]
+    if extras:
+        line += " | " + " ".join(extras)
+    return line
+
+
+def cmd_summary(args):
+    """Print exactly one line summarizing the board; read-only. Intended for
+    `watch -n 15` in a small always-visible pane, or tmux status-right:
+
+      cfx ▶<running> ⏸<blocked-human> ⚑<open-decisions> ◆<backlog sealed-ready>
+          [ | <state>:<n> ...] [ | PAUSED]
+
+    The first segment is always present (zeros included) so the watch pane has
+    a stable shape; the second segment lists only non-zero counts of the other
+    NON-terminal thread states in canonical order and is omitted when all are
+    zero; ` | PAUSED` is appended while <cf_dir>/pause exists. JSONL corruption
+    surfaces via main()'s ValueError handler: message to stderr, exit 1."""
+    line = summary_line(
+        read_jsonl_strict(threads_path(args.board)),
+        read_jsonl_strict(decisions_path(args.board)),
+        read_jsonl_strict(backlog_path(args.board)),
+    )
+    cf_dir = os.path.dirname(os.path.abspath(args.board))
+    if os.path.exists(os.path.join(cf_dir, "pause")):
+        line += " | PAUSED"
+    print(line)
     return 0
 
 
@@ -725,6 +785,12 @@ def build_parser():
     p.add_argument("--last", type=int,
                    help="only the last N records (also the validation window)")
     p.set_defaults(func=cmd_list_ticks)
+
+    p = sub.add_parser("summary",
+                       help="one-line board summary for watch -n 15 / "
+                            "tmux status-right (read-only)")
+    add_board(p)
+    p.set_defaults(func=cmd_summary)
 
     p = sub.add_parser("validate-contract",
                        help="fail-closed seal-contract precondition")

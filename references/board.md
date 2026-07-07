@@ -5,7 +5,7 @@ auto-compact 有损重写(CANON [Q]),跨 tick 状态**只**信看板文件。每
 状态对账(有界读),tick 末把变更写回——凡是"下个 tick 需要知道"的,本 tick 必须落盘。
 
 > 在 `SKILL.md` 的 references 索引中,本文件登记为:`board.md` — 综合看板格式
-> (threads/decisions/ticks/dashboard)+ 每 tick 摘要 schema。
+> (threads/decisions/ticks/backlog)+ 终端表面(CANON [R])+ 每 tick 摘要 schema。
 
 ## 文件布局(per-project,不进 skill 仓)
 
@@ -15,7 +15,6 @@ auto-compact 有损重写(CANON [Q]),跨 tick 状态**只**信看板文件。每
   decisions.jsonl   # 人类决策队列
   ticks.jsonl       # 每 tick 完整裁决(durable 历史;读回一律 list-ticks --last K,绝不整读)
   backlog.jsonl     # 任务补给队列(CANON [M];dedup + 拒绝记忆)
-  dashboard.html    # render-board.py 从上述 jsonl 渲染的 HTML 综合看板(人类异步视图)
 <project>/.curryflows/contracts/
   <thread-id>.md    # 已封每线程契约(task-contracts/task.md 填好的副本,一线程一份)
 <project>/.curryflows/
@@ -29,64 +28,94 @@ auto-compact 有损重写(CANON [Q]),跨 tick 状态**只**信看板文件。每
 非空——`outcome`、`verification`、`constraints`、`boundaries`、`iteration`、`budget`、`blocked_stop`、
 `preconditions`)+ environment-precondition dry-run(`precondition-dryrun.sh`,CANON [O])。
 
-`dashboard.html` 是确定性渲染产物(自包含 HTML,浅色学术配色),不手写:
+## 终端表面(CANON [R]):T0 常显摘要 + T1 看板 TUI
+
+人类表面是终端原生的两层,jsonl 真相源不变:**T0** = `board.py summary` 一行摘要,用户自己
+`watch` 在一个小 pane 里常显;**T1** = `board-tui.py` 全屏 curses 看板,按需在浮动 pane / popup
+里开、看完即关。
 
 ```bash
-python3 <skillDir>/scripts/render-board.py --board ./.curryflows/board   # 写 dashboard.html
+# T0 常显摘要(zellij:layout 里固定一个两行高的小 pane;tmux:status-right)
+watch -n 15 python3 <skillDir>/scripts/board.py summary --board <project>/.curryflows/board
+# T1 看板 TUI(zellij 浮动 pane / tmux popup)
+zellij run --floating --width 90% --height 85% -- \
+  python3 <skillDir>/scripts/board-tui.py --board <project>/.curryflows/board
+tmux display-popup -w 90% -h 85% -E \
+  "python3 <skillDir>/scripts/board-tui.py --board <project>/.curryflows/board"
 ```
 
-## 看板服务(serve-board):启动 / 访问 / 排错
+T0/T1 都由**用户**在自己的 pane 里拉起(T1 的 zellij / tmux 两行二选一)——协调器 `start` 时只把
+这些命令打印给用户,不代拉。
+`board-tui.py` 另有 `--render threads|decisions|backlog|ticks` 无头模式:不起 curses、向 stdout
+打一帧该视图的纯文本(exit 0;jsonl 坏行 → stderr + exit 1;看板目录不存在按空看板渲染表头),
+供无 TTY 的测试 / agent 读看板;不带 `--render` 且 stdout 非 TTY 时 fail-fast(exit 64,提示改用
+`--render`)。
 
-`start` 协调器时顺带拉起 `serve-board.py`——只读、**每请求实时重渲染** + 页面自带自动刷新。按下面来,
-**别再 `nohup`**。
+### CANON [R]:TUI 的写路径纪律(权威定义)
 
-### 启动:用 Bash 工具的后台模式,不要 nohup/setsid/&/sleep
+board-tui 是 durable 看板的**只读渲染器 + 决策输入面**。它写进系统的路径只有两条:
+① `resolve-decision`——经子进程调 `board.py` CLI,TUI 自己绝不碰 jsonl;② pause 文件的创建 / 删除
+(纯 flag 文件)。此外人类保有既有的 Esc 急停权,但那是 attach 到 worker pane 亲手按的,不经 TUI
+实现。TUI **绝不执行生命周期操作**(起 / 驭 / commit / 合 main / 回收)——生命周期写入者只有协调器
+一个;关闭 TUI 对推进零影响。
 
-```bash
-python3 <skillDir>/scripts/serve-board.py --board ./.curryflows/board --port 8787 --host 0.0.0.0
-```
+### board-tui 按键
 
-- **经 Bash 工具的后台模式(`run_in_background: true`)运行这条命令**,协调器记下返回的后台任务 id。
-  **绝不用 `nohup` / `setsid` / `&` / 前台 `sleep` 去拉起或等待**——本环境 sandbox 会杀掉它们(已观测
-  `exit 144`,把含后台启动的整条命令一并杀死,进程根本起不来)。Bash 后台模式由 harness 托管,跨
-  tick 存活、进程退出会回调通知。
-- serve-board 是 **session 级**后台进程(harness 托管的后台任务挂在会话进程上、不挂对话;
-  会话进程退出才随之死)。tick 步骤 0 仍顺手核活(`curl --noproxy '*' … :8787` 非 200 即重拉;
-  serve-board 幂等:端口上已是同看板服务则直接 exit 0),兜底进程崩溃 / 协调器会话重启。
+全局:`1`/`2`/`3`/`4` 切视图(Threads/Decisions/Backlog/Ticks),`j`/`k` 与方向键移动选中,
+`g`/`G` 跳首 / 末行,`r` 强制重读,`R` 跑资源发现(见下「刷新模型」),`P` 开关 pause 文件,
+`?` 帮助浮层(列全部按键),`q` 退出(`Q` 同义)。所有视图的头部显示看板路径、与 `summary` 同字形的计数、
+PAUSED 指示;底部一行是动作结果 / 错误的瞬态状态行。
 
-### host 绑定:决定谁能访问(runbook 默认 0.0.0.0,暴露局域网)
+**[1] Threads**——表列:thread_id、state、attempt、budget(已花/总量 + 百分比,字段缺失留空)、
+last_verdict、`updated` 距今(5m/3h/2d);选中行详情框:branch、worktree、tmux_session、
+codex_session、contract 路径。
 
-- 上面传 `--host 0.0.0.0`,这样**服务器 IP 直连**和**端口转发**都通——代价是只读看板**暴露到局域网**。
-  介意局域网可见就去掉 `--host 0.0.0.0`(脚本默认 `127.0.0.1`,只本机 / 转发可达)。
-- `--port` 默认 8787;传 `--port 0` 让它自动选空闲端口(从 stdout 读回实际 URL)。
+- `Enter` attach 该线程的 tmux 会话(退出 attach 即回 TUI;无 tmux_session 或 attach 失败报状态行);
+- `p` peek:`tmux capture-pane` 抓该会话最近 200 行,进内置可滚动 pager(`j`/`k`/PgUp/PgDn/`q`);
+- `d` 分支 diff:`git -C <worktree> diff <mainbase>...HEAD`,有 `delta` 走 `delta`,否则 `less -R`
+  (设了 `$PAGER` 则尊重);
+- `u` 未提交 diff:`git -C <worktree> diff HEAD`,同一管道;
+- `c` 在 pager 里看契约文件(文件缺失报状态行)。
 
-### 访问(三选一)
+**[2] Decisions**——默认只显 open,`o` 切换显示全部;表列:id、barrier、thread、age(按
+reopened 或 created 计)、summary 截断;详情框:recommendation、options(编号)、evidence 路径、
+divergence、status/resolution。
 
-1. **VSCode / Cursor 远程**:自动转发 8787 → 浏览器开 `http://127.0.0.1:8787/`(127.0.0.1 绑定即可)。
-2. **纯 SSH**:`ssh -L 8787:localhost:8787 <user>@<server>` → 开 `http://127.0.0.1:8787/`(127.0.0.1 绑定即可)。
-3. **服务器 IP 直连**:需 `--host 0.0.0.0` → 开 `http://<server-ip>:8787/`。
+- `v` 在内置 pager 里打开 evidence(相对路径按项目根解析);
+- `Enter` resolve:底部单行输入(backspace 编辑、ESC 取消);该决策带 options 时输入编号 1..N 即
+  选中该项文本,否则自由文本;提交即子进程 `board.py resolve-decision --status resolved`,
+  board.py 的 stdout/stderr 回显在状态行,成功后重读决策;
+- `x` reject:同一输入流程,理由**必填**(拒收空文本),`--status rejected`。
 
-### 排错:本机 curl 回 503/502 ≠ 进程死了
+仅 open 决策可 resolve / reject;对非 open 行按键只报状态行错误。
 
-很多环境本机挂了 HTTP 代理,`curl http://127.0.0.1:8787/` 会被代理拦成 **503 / 502**,这是**假象**,
-不代表 serve-board 死了。真实性核验要**绕过代理**:
+**[3] Backlog**——只读;表列:backlog_id、status、dedup_key、summary;详情框:rationale、
+contract、thread、reject_reason。`Enter`/`v` 在 pager 里看完整记录。
 
-```bash
-curl --noproxy '*' -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8787/   # 200 = 正常
-ss -ltnp | grep 8787                                                              # 确认在监听
-```
+**[4] Ticks**——只读,最近 50 条、新在前(读回同 `list-ticks` 的有界 tail,绝不整读);表列:
+tick、ts、summary 截断。`Enter` 在 pager 里看完整记录(JSON 缩进展开)。
 
-浏览器同理打不开:把 `127.0.0.1` / `<server-ip>` 加进 `no_proxy` 白名单。
+### 刷新模型:被动只 stat mtime,主动发现只在 `R`
+
+- **被动刷新**:每秒(getch 超时 1000ms)只 `stat` 四个 jsonl + pause 文件的 mtime,谁变了才重读
+  谁——常态开销是每秒几次 stat,零读盘。
+- **主动发现**:只有按 `R` 才跑 `discover-threads.py` 对账,stderr 摘要 + 被标记记录进 pager,
+  结论进状态行(`discover: clean (exit 0)` / `discover: N untracked (exit 2)`)。被动路径**绝不**
+  跑发现——协调器 tick 每轮都跑权威对账,`R` 只是人类"现在就要看"的插队,不该变成常驻开销。
+- **坏行浮出**:curses 模式读回遇 JSONL 坏行,保留上一份好数据,顶部持续横幅报出文件:行号,直到
+  重读成功才消——暴露损坏,绝不掩盖。
 
 ## board 写入:用 board.py,不手编 JSONL
 
 `scripts/board.py` 是看板 JSONL 的**唯一写入者**。绝不手编 `threads.jsonl` / `decisions.jsonl`——
-手编易写坏行,而 `render-board.py` 对坏行**静默跳过**,会无声丢状态(看板与真相脱节,且无报错)。
-所有写操作原子(同目录 temp 文件 + `os.replace`),非法枚举 / 缺必填一律 fail-closed 拒写。
+手编易写坏行,而所有读回都是严格 fail-closed 的:一行坏,整个读回失败(`summary` exit 1、TUI 挂
+损坏横幅),看板直接不可用。所有写操作原子(同目录 temp 文件 + `os.replace`),非法枚举 / 缺必填
+一律 fail-closed 拒写。
 
-**更绝不 `>` / `truncate` / `rm` / `: >` 看板 jsonl**——要重置一个看板,先**归档**(`render-board.py` 落
-一份 HTML 快照)再用 board.py 重建;**任何破坏性操作前先读内容**。已观测事故:协调器未看内容就用 `: >`
-清空 `threads/decisions/ticks.jsonl`,毁掉了上一轮已完成 + 全合并 run 的 durable 看板历史。
+**更绝不 `>` / `truncate` / `rm` / `: >` 看板 jsonl**——要重置一个看板,先**归档**(`cp -a` 整个
+board 目录;jsonl 本身就是 durable 历史)再用 board.py 重建;**任何破坏性操作前先读内容**。已观测
+事故:协调器未看内容就用 `: >` 清空 `threads/decisions/ticks.jsonl`,毁掉了上一轮已完成 + 全合并
+run 的 durable 看板历史。
 
 `board.py` CLI(子命令在前,`--board <dir>`=看板目录跟在子命令后;`validate-contract` 例外,只用 `--file` 不带 `--board`):
 
@@ -104,6 +133,12 @@ ss -ltnp | grep 8787                                                            
   (协调器廉价读回状态)。
 - `list-ticks [--last N]`——**有界**读 tick 历史(只解析并校验返回窗口内的行);tick 的 rehydrate
   一律用它,绝不整读 `ticks.jsonl`。
+- `summary`——向 stdout 打**恰好一行**状态摘要:
+  `cfx ▶<running> ⏸<blocked-human> ⚑<open 决策> ◆<sealed-ready>[ | <state>:<n> ...][ | PAUSED]`。
+  首段恒在(含零,`watch` pane 形状稳定);第二段只列其余**非终态**线程状态的非零计数
+  (ready/idle/reviewed/committed/verified/session-reaped,按枚举序;全零则整段省略;终态
+  merged/rolled-back 不显示);pause 文件存在时缀 ` | PAUSED`。只读,给 `watch -n 15` /
+  tmux status-right 常显用;jsonl 坏行 → stderr 报错 + exit 1。
 - `validate-contract --file PATH`——fail-closed seal 前置(见上「文件布局」);有效 exit 0,否则非零并打印缺失字段列表。
 
 ## threads.jsonl(每行一个线程)

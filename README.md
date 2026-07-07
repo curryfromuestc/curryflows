@@ -55,12 +55,14 @@ git(≥2.5,worktree)、python3。
 python3 scripts/discover-threads.py --project <项目repo> \
   --board <项目>/.curryflows/board/threads.jsonl
 
-# 把看板 jsonl 渲染成自包含 HTML 看板(浅色学术配色,浏览器直接开)。
-python3 scripts/render-board.py --board <项目>/.curryflows/board   # → dashboard.html
+# 一行状态摘要(T0 常显面:用户 watch -n 15 挂小 pane / tmux status-right;只读):
+python3 scripts/board.py summary --board <项目>/.curryflows/board
+# → cfx ▶2 ⏸1 ⚑1 ◆3 | ready:1 | PAUSED  (首段恒在含零;再列非零的其余非终态计数;pause 存在缀 PAUSED)
 
-# 起本地端口 serve 看板:每次请求实时重渲染 + 页面自动刷新(start 协调器时顺带后台拉起)。
-python3 scripts/serve-board.py --board <项目>/.curryflows/board --port 8787
-# → http://127.0.0.1:8787/  (SSH 机器端口转发即可在浏览器看实时状态)
+# 全屏终端看板(T1 按需面:curses TUI,zellij 浮动 pane / tmux popup 里开;CANON [R]:
+# 写路径仅 resolve-decision(经 board.py)+ pause 开关,关闭不影响推进):
+python3 scripts/board-tui.py --board <项目>/.curryflows/board
+python3 scripts/board-tui.py --board <项目>/.curryflows/board --render threads   # 无 TTY 的单帧文本输出
 
 # 看板 jsonl 的唯一写入者(原子 + 枚举/必填 fail-closed,绝不手编):注册/更新线程、post 决策、封定校验。
 python3 scripts/board.py upsert-thread --board <项目>/.curryflows/board --id t1 --state running --codex-session <uuid>
@@ -96,8 +98,9 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
   操作规程 / 综合看板 + 摘要 schema / codex 接入 / 强目标契约 / 决策面 / goal-cookbook)。
 - `scripts/` — 英文代码,被 agent 调用:`discover-threads.py`(统一资源发现)、
   `board.py`(看板 jsonl 唯一写入者:upsert-thread / post-decision / resolve-decision /
-  upsert-backlog / record-tick / list-*,原子 + 枚举/必填 fail-closed)、`render-board.py`
-  (jsonl → HTML 看板)、`serve-board.py`(本地端口 serve 实时看板,幂等启动)、
+  upsert-backlog / record-tick / list-* / summary,原子 + 枚举/必填 fail-closed)、
+  `board-tui.py`(终端看板 TUI:四视图 + 决策 resolve/reject + pause 开关,只读渲染 +
+  决策输入面,CANON [R])、
   `reap.sh`(资源回收,终态一并)、
   `inject-steer.sh` / `interrupt-target.sh` / `locate-codex.sh`(codex 的 tmux 驱动器)、
   `codex-review.sh`(codex 第二意见腿:worker=codex 时可选、worker=Claude 时必需)、
@@ -113,7 +116,7 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
   board/threads.jsonl       # 线程台账(资源对账的依据)
   board/decisions.jsonl     # 人类决策队列
   board/ticks.jsonl         # 每 tick 完整裁决(durable 历史)
-  board/dashboard.html      # render-board.py 渲染的 HTML 综合看板
+  board/backlog.jsonl       # 任务补给队列(CANON [M];dedup + 拒绝记忆)
   contracts/<thread-id>.md  # 已封的每线程契约(threads.jsonl 的 contract 字段指向它)
   temp/                     # 监督日志 / 证据
 ```
