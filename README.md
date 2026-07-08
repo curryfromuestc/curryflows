@@ -59,10 +59,17 @@ python3 scripts/discover-threads.py --project <项目repo> \
 python3 scripts/board.py summary --board <项目>/.curryflows/board
 # → cfx ▶2 ⏸1 ⚑1 ◆3 | ready:1 | PAUSED  (首段恒在含零;再列非零的其余非终态计数;pause 存在缀 PAUSED)
 
-# 全屏终端看板(T1 按需面:curses TUI,zellij 浮动 pane / tmux popup 里开;CANON [R]:
-# 写路径仅 resolve-decision(经 board.py)+ pause 开关,关闭不影响推进):
-python3 scripts/board-tui.py --board <项目>/.curryflows/board
+# 全屏终端看板(T1 按需面:curses TUI,独立只读查看器;CANON [R]:纯只读、零写路径,
+# 决策在主 session 对 tick 摘要直接回复、由协调器落 resolve-decision,关闭不影响推进):
+ln -sf "$(pwd)/scripts/board-tui.py" ~/.local/bin/cfx-board   # 一次性建符号链接
+cfx-board                                          # 任意目录:cwd 上溯找板,找不到列注册表挑选(注册表空 → exit 2 + 提示)
+python3 scripts/board-tui.py --board <项目>/.curryflows/board                    # 显式指定
 python3 scripts/board-tui.py --board <项目>/.curryflows/board --render threads   # 无 TTY 的单帧文本输出
+python3 scripts/board-tui.py --render boards       # 无头列出看板注册表挑选表(无需 --board)
+
+# 全局看板注册表(~/.cache/curryflows/boards.jsonl,env CURRYFLOWS_REGISTRY 可覆盖;
+# board.py 的每个成功写子命令自动登记,只是索引不是真相):
+python3 scripts/board.py boards                    # 只读 JSONL dump,每条补 "exists" 字段
 
 # 看板 jsonl 的唯一写入者(原子 + 枚举/必填 fail-closed,绝不手编):注册/更新线程、post 决策、封定校验。
 python3 scripts/board.py upsert-thread --board <项目>/.curryflows/board --id t1 --state running --codex-session <uuid>
@@ -98,9 +105,10 @@ bash scripts/reap.sh --branch <name>          --project <项目repo>          # 
   操作规程 / 综合看板 + 摘要 schema / codex 接入 / 强目标契约 / 决策面 / goal-cookbook)。
 - `scripts/` — 英文代码,被 agent 调用:`discover-threads.py`(统一资源发现)、
   `board.py`(看板 jsonl 唯一写入者:upsert-thread / post-decision / resolve-decision /
-  upsert-backlog / record-tick / list-* / summary,原子 + 枚举/必填 fail-closed)、
-  `board-tui.py`(终端看板 TUI:四视图 + 决策 resolve/reject + pause 开关,只读渲染 +
-  决策输入面,CANON [R])、
+  upsert-backlog / record-tick / list-* / summary / boards,原子 + 枚举/必填 fail-closed;
+  成功写操作自动登记全局看板注册表)、
+  `board-tui.py`(终端看板 TUI:四视图纯只读渲染、零写路径,`cfx-board` 无参启动 +
+  cwd 上溯 / 注册表挑选;决策在主 session 回复,CANON [R])、
   `reap.sh`(资源回收,终态一并)、
   `inject-steer.sh` / `interrupt-target.sh` / `locate-codex.sh`(codex 的 tmux 驱动器)、
   `codex-review.sh`(codex 第二意见腿:worker=codex 时可选、worker=Claude 时必需)、

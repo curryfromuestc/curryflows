@@ -49,9 +49,16 @@ or rejected. Rejected items are never deleted (rejection memory), and dedup_key
 is unique across all items, so a previously rejected task cannot silently
 reappear under a fresh id.
 
+Global board registry: every SUCCESSFUL mutating subcommand upserts the
+invoked board into ~/.cache/curryflows/boards.jsonl (override via
+CURRYFLOWS_REGISTRY), so the standalone viewer (board-tui.py) can discover
+boards with no arguments. The registry is a convenience index, NOT truth --
+the board files remain the only source of truth -- so a registry failure
+never fails the board operation itself.
+
 Subcommands: upsert-thread, post-decision, resolve-decision, record-tick,
 upsert-backlog, list-threads, list-decisions, list-backlog, list-ticks,
-summary, validate-contract, panel-args. Usage errors exit 64.
+summary, boards, validate-contract, panel-args. Usage errors exit 64.
 """
 import argparse
 import json
@@ -163,6 +170,39 @@ def backlog_path(board):
 def fail(msg, code=1):
     sys.stderr.write(f"error: {msg}\n")
     sys.exit(code)
+
+
+# --------------------------------------------------------------------------- #
+# global board registry (convenience index for the standalone viewer)
+# --------------------------------------------------------------------------- #
+def registry_path():
+    """~/.cache/curryflows/boards.jsonl, overridable via CURRYFLOWS_REGISTRY
+    (tests point it at a temp file)."""
+    return os.environ.get("CURRYFLOWS_REGISTRY") or os.path.join(
+        os.path.expanduser("~"), ".cache", "curryflows", "boards.jsonl")
+
+
+def register_board(board):
+    """Best-effort upsert of the invoked board into the global registry.
+
+    The registry is a convenience index for the standalone viewer
+    (board-tui.py no-arg discovery), NOT truth; the board files remain the
+    only source of truth. Therefore a registry failure must never fail the
+    board operation itself: catch everything, one-line warning to stderr,
+    exit code unchanged. Deduped by absolute board path, atomic rewrite."""
+    try:
+        path = registry_path()
+        board_abs = os.path.abspath(board)
+        rows = [r for r in read_jsonl_strict(path)
+                if r.get("board") != board_abs]
+        rows.append({
+            "board": board_abs,
+            "project": os.path.dirname(os.path.dirname(board_abs)),
+            "updated": now_iso(),
+        })
+        write_jsonl_atomic(path, rows)
+    except Exception as exc:
+        sys.stderr.write(f"warning: board registry update failed: {exc}\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -523,6 +563,21 @@ def cmd_summary(args):
 
 
 # --------------------------------------------------------------------------- #
+# boards (read-only dump of the global board registry)
+# --------------------------------------------------------------------------- #
+def cmd_boards(args):
+    """Print the registry records as JSONL, each with an added "exists" field
+    (os.path.isdir of the board dir). Read-only, takes no --board. A missing
+    registry file prints nothing and exits 0 -- boards self-register on the
+    first successful mutating board.py call."""
+    for rec in read_jsonl_strict(registry_path()):
+        out = dict(rec)
+        out["exists"] = os.path.isdir(str(rec.get("board") or ""))
+        print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # validate-contract (CANON [D], fail-closed seal precondition)
 # --------------------------------------------------------------------------- #
 _KEY_RE = re.compile(r"^[`\"']?([A-Za-z_][A-Za-z0-9_\-]*)[`\"']?\s*:\s*(.*)$")
@@ -792,6 +847,11 @@ def build_parser():
     add_board(p)
     p.set_defaults(func=cmd_summary)
 
+    p = sub.add_parser("boards",
+                       help="list the global board registry as JSONL "
+                            "(read-only; adds \"exists\" per record)")
+    p.set_defaults(func=cmd_boards)
+
     p = sub.add_parser("validate-contract",
                        help="fail-closed seal-contract precondition")
     p.add_argument("--file", required=True, help="sealed contract file path")
@@ -810,16 +870,27 @@ def build_parser():
     return ap
 
 
+# subcommands that mutate the board; each SUCCESSFUL run upserts the board
+# into the global registry (best-effort, see register_board).
+MUTATING_COMMANDS = (
+    "upsert-thread", "post-decision", "resolve-decision",
+    "record-tick", "upsert-backlog",
+)
+
+
 def main():
     ap = build_parser()
     args = ap.parse_args()
     try:
-        return args.func(args)
+        rc = args.func(args)
     except ValueError as exc:
         # corruption surfaced by read_jsonl_strict: fail loud (with line number),
         # non-zero, but without a noisy traceback.
         sys.stderr.write(f"error: {exc}\n")
         return 1
+    if args.command in MUTATING_COMMANDS and not rc:
+        register_board(args.board)
+    return rc
 
 
 if __name__ == "__main__":

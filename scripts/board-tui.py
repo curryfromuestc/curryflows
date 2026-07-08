@@ -1,21 +1,30 @@
 #!/usr/bin/env python3
-"""curryflows: terminal board TUI -- the on-demand human surface (CANON [R] T1).
+"""curryflows: terminal board TUI -- the standalone read-only viewer (CANON [R] T1).
 
 A python3-stdlib curses viewer over the durable board (threads.jsonl /
-decisions.jsonl / backlog.jsonl / ticks.jsonl) plus a decision-input surface.
-Launched in a zellij floating pane or tmux popup; the always-visible T0 tier is
+decisions.jsonl / backlog.jsonl / ticks.jsonl). Open a new terminal anywhere,
+run one command, see the board; the always-visible T0 tier is
 `board.py summary` under `watch -n 15`.
 
-CANON [R] write-path discipline: this TUI is a READ-ONLY renderer of the board
-whose only write paths into the system are
-  (1) resolve-decision, shelled out to board.py (the sole board writer) -- the
-      TUI never writes the jsonl files itself;
-  (2) creating/removing the pause flag file <cf_dir>/pause (a plain flag file);
-  (3) the pre-existing human right of Esc emergency stop is NOT implemented
-      here -- humans attach to the worker pane (Enter) and press Esc there.
+CANON [R] revised: this TUI is a pure read-only renderer with ZERO write
+paths. Decisions are answered in the MAIN SESSION conversation: the
+coordinator lists every open decision in full in its per-tick summary, the
+human replies there, and the coordinator lands the resolution through
+board.py (the sole board writer). Pause is a plain flag file the human
+touches/rms directly (<cf_dir>/pause); the TUI only DISPLAYS the PAUSED
+status. The pre-existing human right of Esc emergency stop is not implemented
+here either -- humans attach to the worker pane (Enter) and press Esc there.
 The TUI NEVER performs lifecycle operations (launch/steer/commit/merge/reap);
 those belong to the coordinator, the single lifecycle writer. Closing the TUI
 must not affect progress.
+
+Board discovery (no --board needed): (a) explicit --board wins; (b) else walk
+up from cwd looking for a .curryflows/board directory; (c) else read the
+global registry (~/.cache/curryflows/boards.jsonl, env CURRYFLOWS_REGISTRY;
+boards self-register whenever the coordinator writes them via board.py) --
+exactly one live entry opens directly, several show a picker (j/k + Enter,
+q quits), none exits 2 with a hint. Key `b` reopens the picker to switch
+boards while running.
 
 Refresh model (explicit design decision): passive refresh only stats mtimes --
 on every getch timeout (1000 ms) the four jsonl files plus the pause file are
@@ -30,12 +39,15 @@ succeeds -- corruption is surfaced, never hidden. In --render mode corruption
 goes to stderr with exit 1.
 
 CLI:
-  board-tui.py --board <dir> [--render threads|decisions|backlog|ticks]
+  board-tui.py [--board <dir>] [--render threads|decisions|backlog|ticks|boards]
 
 --render prints one plain-text frame of that view to stdout (no curses, no
 color) and exits 0 -- the testable surface, also usable by agents. A missing
-board dir renders headers with zero rows. Without --render, a non-TTY stdout
-fails fast with exit 64 and a hint to use --render.
+board dir renders headers with zero rows. `--render boards` dumps the picker
+table and needs no --board; the other views, when --board is omitted, apply
+the same discovery (b then c) but never draw a picker headless -- if a single
+board cannot be auto-picked they exit 2 with a hint to pass --board. Without
+--render, a non-TTY stdout fails fast with exit 64 and a hint to use --render.
 
 ticks.jsonl is append-only and read boundedly (last 50 lines, tail-then-parse,
 same approach as board.py list-ticks; the file is never slurped).
@@ -61,10 +73,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 import board as boardlib  # noqa: E402  (sibling module; sole strict-IO owner)
 
-BOARD_PY = os.path.join(SCRIPT_DIR, "board.py")
 DISCOVER_PY = os.path.join(SCRIPT_DIR, "discover-threads.py")
 
 VIEWS = ("threads", "decisions", "backlog", "ticks")
+RENDER_CHOICES = VIEWS + ("boards",)
 TICKS_TAIL = 50
 RENDER_WIDTH = 100          # fixed frame width for --render (stable columns)
 STATUS_TTL_S = 8            # transient status line lifetime
@@ -272,6 +284,134 @@ class BoardState:
 
 
 # --------------------------------------------------------------------------- #
+# board discovery: --board -> cwd walk-up -> global registry (picker)
+# --------------------------------------------------------------------------- #
+EMPTY_REGISTRY_HINT = (
+    "board-tui: no board found. No --board given, no .curryflows/board "
+    "directory above cwd, and the board registry ({registry}) has no live "
+    "entries. Boards self-register when the coordinator writes them via "
+    "board.py; pass --board <project>/.curryflows/board to open one "
+    "explicitly.\n"
+)
+AMBIGUOUS_REGISTRY_HINT = (
+    "board-tui: multiple boards registered; headless mode cannot show a "
+    "picker. Pass --board <dir> (list candidates with --render boards).\n"
+)
+
+BOARDS_COLS = (("PROJECT", 18), ("UPD", 5), ("COUNTS", 32), ("BOARD", None))
+
+
+def walk_up_for_board(start):
+    """Walk up from `start` looking for a .curryflows/board directory."""
+    cur = os.path.abspath(start)
+    while True:
+        cand = os.path.join(cur, ".curryflows", "board")
+        if os.path.isdir(cand):
+            return cand
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def registry_entries():
+    """Registry records whose board dir still exists (strict read; a corrupted
+    registry raises ValueError like any other strict read)."""
+    rows = boardlib.read_jsonl_strict(boardlib.registry_path())
+    return [r for r in rows if r.get("board") and os.path.isdir(r["board"])]
+
+
+def picker_cells(entries):
+    """One display tuple per registry entry: project basename, updated age,
+    summary_line counts (strict read of that board's jsonl; per-board
+    corruption is surfaced in the COUNTS column, never hidden), board path."""
+    cells = []
+    for rec in entries:
+        board = rec["board"]
+        try:
+            counts = boardlib.summary_line(
+                boardlib.read_jsonl_strict(boardlib.threads_path(board)),
+                boardlib.read_jsonl_strict(boardlib.decisions_path(board)),
+                boardlib.read_jsonl_strict(boardlib.backlog_path(board)),
+            )
+        except ValueError as exc:
+            counts = f"CORRUPT: {exc}"
+        project = rec.get("project") or os.path.dirname(os.path.dirname(board))
+        cells.append((os.path.basename(project),
+                      humanize_age(rec.get("updated")),
+                      counts,
+                      board))
+    return cells
+
+
+def _boards_widths(width):
+    fixed = sum(w for _, w in BOARDS_COLS if w) + (len(BOARDS_COLS) - 1)
+    flex = max(10, width - fixed)
+    return [w if w else flex for _, w in BOARDS_COLS]
+
+
+def boards_header_line(width):
+    widths = _boards_widths(width)
+    return " ".join(pad(t, w) for (t, _), w in zip(BOARDS_COLS, widths))
+
+
+def boards_row_line(cells, width):
+    widths = _boards_widths(width)
+    return " ".join(pad(str(c), w) for c, w in zip(cells, widths))
+
+
+def render_boards_frame(entries, width=RENDER_WIDTH):
+    """Headless dump of the picker table (--render boards)."""
+    lines = [f"curryflows boards registry: {boardlib.registry_path()}", "",
+             boards_header_line(width)]
+    for cells in picker_cells(entries):
+        lines.append(boards_row_line(cells, width))
+    return lines
+
+
+def picker_loop(stdscr, entries):
+    """curses board picker: j/k move, Enter opens, q quits. Returns the chosen
+    board path or None. Read-only like everything else in this TUI."""
+    stdscr.keypad(True)
+    stdscr.timeout(-1)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    rows = picker_cells(entries)
+    sel, off = 0, 0
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        safe_addstr(stdscr, 0, 0,
+                    "curryflows boards: j/k move  Enter open  q quit",
+                    curses.A_BOLD)
+        safe_addstr(stdscr, 1, 0, boards_header_line(w - 1),
+                    curses.A_UNDERLINE)
+        page = max(1, h - 3)
+        if sel < off:
+            off = sel
+        if sel >= off + page:
+            off = sel - page + 1
+        for i, cells in enumerate(rows[off:off + page]):
+            attr = curses.A_REVERSE if off + i == sel else 0
+            safe_addstr(stdscr, 2 + i, 0,
+                        pad(boards_row_line(cells, w - 1), w - 1), attr)
+        stdscr.refresh()
+        ch = stdscr.getch()
+        if ch in (ord("q"), ord("Q")):
+            return None
+        if ch in (ord("j"), curses.KEY_DOWN):
+            sel = min(sel + 1, len(rows) - 1)
+        elif ch in (ord("k"), curses.KEY_UP):
+            sel = max(sel - 1, 0)
+        elif ch in (curses.KEY_ENTER, 10, 13):
+            return entries[sel]["board"]
+        elif ch == curses.KEY_RESIZE:
+            continue
+
+
+# --------------------------------------------------------------------------- #
 # view model: rows, table columns, detail boxes (shared curses / --render)
 # --------------------------------------------------------------------------- #
 def visible_rows(state, view, open_only=True):
@@ -400,14 +540,18 @@ def render_frame(state, view, open_only=True, width=RENDER_WIDTH):
 # curses UI
 # --------------------------------------------------------------------------- #
 HELP_LINES = [
+    "this TUI is read-only (CANON [R]): answer decisions by replying in the",
+    "main session (the coordinator lands them via board.py); pause/resume by",
+    "touch/rm <project>/.curryflows/pause -- the header shows PAUSED.",
+    "",
     "global",
     "  1/2/3/4     switch view (Threads/Decisions/Backlog/Ticks)",
     "  j/k, arrows move selection",
     "  g/G         first/last row",
     "  r           force re-read of all board files",
-    "  R           run resource discovery (discover-threads.py; queue-jump,",
-    "              the coordinator tick already runs it authoritatively)",
-    "  P           toggle the pause file",
+    "  R           run resource discovery (discover-threads.py; read-only",
+    "              queue-jump, the coordinator tick runs it authoritatively)",
+    "  b           switch board (registry picker; needs >1 registered board)",
     "  ?           this help",
     "  q           quit (never affects progress: the TUI holds no lifecycle)",
     "",
@@ -418,12 +562,10 @@ HELP_LINES = [
     "  u           uncommitted diff (git diff HEAD, same pipeline)",
     "  c           view the contract file",
     "",
-    "[2] decisions (write path: resolve-decision via board.py ONLY)",
+    "[2] decisions (read-only; reply in the main session to decide)",
     "  o           toggle open-only / all",
-    "  Enter       resolve: a bare number 1..N picks that option, else free",
-    "              text; ESC cancels",
-    "  x           reject: same input flow, non-empty text required",
     "  v           view the evidence file",
+    "  Enter       full record in the pager",
     "",
     "[3] backlog (read-only)",
     "  Enter/v     full record in the pager",
@@ -529,8 +671,8 @@ class TUI:
             self.set_status("board files re-read")
         elif ch == ord("R"):
             self.run_discovery()
-        elif ch == ord("P"):
-            self.toggle_pause()
+        elif ch == ord("b"):
+            self.switch_board()
         elif ch == ord("?"):
             self.pager("help", HELP_LINES)
         elif ch in (curses.KEY_ENTER, 10, 13):
@@ -549,8 +691,6 @@ class TUI:
             self.open_only = not self.open_only
             self.set_status("decisions: open only" if self.open_only
                             else "decisions: all")
-        elif view == "decisions" and ch == ord("x"):
-            self.resolve_dialog(reject=True)
         elif view == "decisions" and ch == ord("v"):
             rec = self.current_rec()
             if rec is not None:
@@ -563,9 +703,7 @@ class TUI:
         view = VIEWS[self.view]
         if view == "threads":
             self.attach()
-        elif view == "decisions":
-            self.resolve_dialog(reject=False)
-        else:                               # backlog / ticks
+        else:                               # decisions / backlog / ticks
             self.show_full_record()
 
     # -- drawing ------------------------------------------------------------ #
@@ -662,55 +800,6 @@ class TUI:
                 elif ch == curses.KEY_RESIZE:
                     continue
         finally:
-            self.stdscr.timeout(1000)
-
-    # -- single-line input dialog (hand-rolled; backspace + ESC cancel) ------ #
-    def prompt_input(self, prompt):
-        """Returns the entered text, or None on ESC."""
-        self.stdscr.timeout(-1)
-        try:
-            curses.curs_set(1)
-        except curses.error:
-            pass
-        buf = []
-        result = None
-        try:
-            while True:
-                h, w = self.stdscr.getmaxyx()
-                line = prompt + "".join(buf)
-                shown = clip(line, w - 2, ellipsis=False)
-                safe_addstr(self.stdscr, h - 1, 0, pad(shown, w - 1),
-                            curses.A_BOLD)
-                try:
-                    self.stdscr.move(h - 1, min(disp_width(shown), w - 2))
-                except curses.error:
-                    pass
-                self.stdscr.refresh()
-                try:
-                    ch = self.stdscr.get_wch()
-                except curses.error:
-                    continue
-                if isinstance(ch, str):
-                    if ch == "\x1b":                       # ESC: cancel
-                        return None
-                    if ch in ("\n", "\r"):
-                        result = "".join(buf)
-                        return result
-                    if ch in ("\x7f", "\x08"):
-                        buf = buf[:-1]
-                    elif ch.isprintable():
-                        buf.append(ch)
-                else:
-                    if ch in (curses.KEY_BACKSPACE, curses.KEY_DC):
-                        buf = buf[:-1]
-                    elif ch == curses.KEY_ENTER:
-                        result = "".join(buf)
-                        return result
-        finally:
-            try:
-                curses.curs_set(0)
-            except curses.error:
-                pass
             self.stdscr.timeout(1000)
 
     # -- threads actions ------------------------------------------------------ #
@@ -813,50 +902,7 @@ class TUI:
             return
         self.pager(f"{label}: {path}", text.splitlines() or ["(empty file)"])
 
-    # -- decisions actions ----------------------------------------------------- #
-    def resolve_dialog(self, reject):
-        rec = self.current_rec()
-        if rec is None:
-            return
-        if rec.get("status") != "open":
-            self.set_status("only OPEN decisions can be resolved/rejected")
-            return
-        options = rec.get("options") or []
-        verb = "reject" if reject else "resolve"
-        hint = f" (1..{len(options)} picks an option, or text)" if options \
-            else " (text)"
-        text = self.prompt_input(f"{verb} {rec.get('id')}{hint}: ")
-        if text is None:
-            self.set_status(f"{verb}: cancelled")
-            return
-        text = text.strip()
-        if options and text.isdigit() and 1 <= int(text) <= len(options):
-            text = str(options[int(text) - 1])
-        if not text:
-            self.set_status(f"{verb}: empty text refused")
-            return
-        # CANON [R]: the ONLY board write path -- shell out to board.py.
-        cmd = ["python3", BOARD_PY, "resolve-decision",
-               "--board", self.state.board,
-               "--id", str(rec.get("id")), "--resolution", text]
-        if reject:
-            cmd += ["--status", "rejected"]
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=30)
-        except Exception as exc:
-            self.set_status(f"{verb} failed: {exc}")
-            return
-        result = (proc.stdout.strip() or proc.stderr.strip()).splitlines()
-        tail = result[-1] if result else ""
-        if proc.returncode == 0:
-            self.state.reload_file("decisions")
-            self.set_status(f"{verb} ok: {clip(tail, 120)}")
-        else:
-            self.set_status(
-                f"{verb} failed (exit {proc.returncode}): {clip(tail, 120)}")
-
-    # -- backlog / ticks actions ------------------------------------------------ #
+    # -- record detail (decisions / backlog / ticks) ----------------------------- #
     def show_full_record(self):
         rec = self.current_rec()
         if rec is None:
@@ -866,18 +912,27 @@ class TUI:
         self.pager(f"{view} record: {row_key(view, rec)}", body)
 
     # -- global actions ----------------------------------------------------------- #
-    def toggle_pause(self):
+    def switch_board(self):
+        """Reopen the registry picker to view another board (read-only; only
+        offered when more than one live board is registered)."""
         try:
-            if os.path.exists(self.state.pause_path):
-                os.remove(self.state.pause_path)
-                self.set_status("pause file removed (coordinator resumes)")
-            else:
-                with open(self.state.pause_path, "w"):
-                    pass
-                self.set_status("pause file created (coordinator pauses)")
-        except OSError as exc:
-            self.set_status(f"pause toggle failed: {exc}")
-        self.state.paused = os.path.exists(self.state.pause_path)
+            entries = registry_entries()
+        except ValueError as exc:
+            self.set_status(f"registry: {exc}")
+            return
+        if len(entries) < 2:
+            self.set_status("switch board: fewer than 2 boards registered")
+            return
+        try:
+            board = picker_loop(self.stdscr, entries)
+        finally:
+            self.resume_screen()
+        if board and board != self.state.board:
+            self.state = BoardState(board)
+            self.state.reload_all()
+            self.sel = {v: 0 for v in VIEWS}
+            self.offset = {v: 0 for v in VIEWS}
+            self.set_status(f"switched to {board}")
 
     def run_discovery(self):
         """Active discovery, ONLY on the R key (queue-jump; the coordinator
@@ -923,16 +978,51 @@ class TUI:
 # --------------------------------------------------------------------------- #
 def main():
     ap = _UsageParser(
-        description="curryflows terminal board TUI (CANON [R]: read-only "
-                    "renderer + decision input; never a lifecycle writer)")
-    ap.add_argument("--board", required=True, help="board directory")
-    ap.add_argument("--render", choices=VIEWS,
+        description="curryflows terminal board TUI (CANON [R] revised: pure "
+                    "read-only renderer, zero write paths; decisions are "
+                    "answered in the main session)")
+    ap.add_argument("--board",
+                    help="board directory (optional; else walk up from cwd "
+                         "for .curryflows/board, else the global registry)")
+    ap.add_argument("--render", choices=RENDER_CHOICES,
                     help="headless: print one plain-text frame of this view "
-                         "to stdout and exit (no curses, no color)")
+                         "to stdout and exit (no curses, no color); `boards` "
+                         "dumps the registry picker table")
     args = ap.parse_args()
 
-    state = BoardState(args.board)
+    if args.render == "boards":
+        try:
+            entries = registry_entries()
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        if not entries:
+            sys.stderr.write(EMPTY_REGISTRY_HINT.format(
+                registry=boardlib.registry_path()))
+            return 2
+        for line in render_boards_frame(entries):
+            print(line)
+        return 0
+
+    board = args.board or walk_up_for_board(os.getcwd())
+
     if args.render:
+        if board is None:
+            try:
+                entries = registry_entries()
+            except ValueError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                return 1
+            if not entries:
+                sys.stderr.write(EMPTY_REGISTRY_HINT.format(
+                    registry=boardlib.registry_path()))
+                return 2
+            if len(entries) > 1:
+                # headless mode never draws a picker
+                sys.stderr.write(AMBIGUOUS_REGISTRY_HINT)
+                return 2
+            board = entries[0]["board"]
+        state = BoardState(board)
         try:
             state.load_all_strict()
         except ValueError as exc:
@@ -945,9 +1035,27 @@ def main():
     if not sys.stdout.isatty():
         sys.stderr.write(
             "board-tui: stdout is not a TTY; use --render "
-            "threads|decisions|backlog|ticks for a headless frame\n")
+            "threads|decisions|backlog|ticks|boards for a headless frame\n")
         return 64
 
+    if board is None:
+        try:
+            entries = registry_entries()
+        except ValueError as exc:
+            sys.stderr.write(f"error: {exc}\n")
+            return 1
+        if not entries:
+            sys.stderr.write(EMPTY_REGISTRY_HINT.format(
+                registry=boardlib.registry_path()))
+            return 2
+        if len(entries) == 1:
+            board = entries[0]["board"]
+        else:
+            board = curses.wrapper(picker_loop, entries)
+            if board is None:               # q in the picker
+                return 0
+
+    state = BoardState(board)
     curses.wrapper(lambda stdscr: TUI(stdscr, state).run())
     return 0
 
