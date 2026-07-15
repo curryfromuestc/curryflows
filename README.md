@@ -1,16 +1,15 @@
 # curryflows
 
-[herdr](https://herdr.dev) + codex + Claude Code `/loop` 的极简并发开发协调器:把活派给
-长跑的 codex worker,心跳巡检防跑偏,人类只在真需要时被打扰。
+[herdr](https://herdr.dev) + codex + Claude Code `/loop` 的并发开发协调器:把活派给
+长跑的 codex worker,心跳巡检防跑偏。
 
 ## 它怎么工作
 
 - 协调器(Claude Code 会话)按任务开线程:每线程一个独立 git 分支 + worktree + herdr
   workspace,codex 在里面长跑(`model_reasoning_effort=max`)。
-- `/loop` 心跳每几分钟触发一个 tick:协调器自主巡检(`herdr agent list`、`pane read`、
-  git diff,看什么自己定),跑偏就驭,干完就自审 → 合本地 main → 回收;推送远端永远归人类。
+- `/loop` 心跳每隔一段时间触发一个 tick:协调器自主巡检(`herdr agent list`、`pane read`、
+  git diff,看什么自己定),跑偏就介入处理,干完就自审 → 合本地 main → 回收;推送远端永远归人类。
 - 需要人类裁决时:workspace 改名标记 + herdr 弹通知;其余线程照推,不等人。
-- **herdr 就是看板**:workspace 列表一眼看全,点进去就是活的 codex TUI。
 
 ```
 herdr workspaces
