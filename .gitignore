@@ -1,5 +1,2 @@
-__pycache__/
-*.pyc
-temp/
 .curryflows/
 .DS_Store

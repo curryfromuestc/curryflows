@@ -1,286 +1,114 @@
 ---
 name: curryflows
 description: >-
-  通用工作流协调器 skill,把人类 review 从构建关键路径上解耦。与 ultracode 官方 Workflow 分工、
-  按任务动态切:确定性/有界任务(实现一批、评审 diff、研究、内层扇出+对抗验证)走 ultracode 官方
-  Workflow、不用本 skill;curryflows 专管 tmux 里长跑、跨会话、防 runaway 的自驱 codex /goal 群 +
-  durable 异步人类决策面。一个 /loop 协调器以"审核优先"
-  推进多个在 tmux 里长跑的 codex /goal worker:每个 tick 调官方 Workflow(workflows/review-panel.js)
-  跑 review 面板审产物 + 对账资源,协调器据裁决决策,内联操作 tmux(起/驭/回收 codex;改码一律
-  外派 worker / fixer subagent)。worker 是 codex、reviewer 是 Claude,天然跨模型;裁决只回一条清晰摘要
-  给主 session,完整证据落 durable 看板,人类异步看、异步决策,默认不阻断推进——合 main 验证过即自动合、
-  只在对外不可逆、跨模型真分歧才升人类。自驱 codex /goal 挂强目标契约(budget +
-  blocked-stop)+ 只读审计 + Esc 急停,防跑飞。统一资源发现把所有在途 codex 会话 + worktree
-  对账,用完即回收,杜绝 runaway。触发于:"起 curryflows 协调器"、"用 curryflows 跑并发开发"、
-  "做带跨模型评审的并发开发"、"监督 codex /goal 别跑飞"、"排查 runaway codex 会话"、
-  "把人类 review 从关键路径上解耦"。
+  极简并发开发协调器:把任务派给在 herdr workspace 里长跑的 codex worker,用 /loop 心跳
+  定期巡检防跑偏。协调器每 tick 自主决策(看什么、驭什么、何时合),验证通过自动合本地
+  main,只在自己裁不动或对外不可逆时通知人类。触发于:"起 curryflows"、"用 curryflows
+  跑并发开发"、"派个 codex 长跑任务"、"监督 codex 别跑飞"。
 user-invocable: true
-argument-hint: '[start | status | board | oversee <codex-session-id> <pane>]'
+argument-hint: "[要推进的任务,自由描述]"
 type: skill
-tags: [工作流, 编排, 跨模型评审, 协调器, codex, tmux, worktree, 反捏造]
 requires:
-  - codex CLI (>=0.128, 支持 /goal)
-  - tmux
-  - git (>=2.5, 支持 worktree)
-  - python3
+  - herdr
+  - codex CLI
+  - git (>=2.5, worktree)
 ---
 
 # curryflows
 
-把人类 review 从构建关键路径上解耦的通用工作流协调器。一个 `/loop` 协调器并发推进多个长跑
-worker;解耦期的正确性由跨模型 review(worker=codex,reviewer=Claude)+ 反捏造审核守住。
-**每个 tick 都吐出一条清晰摘要回主 session,人类有空才看、才决策,而决策默认不阻断推进——只有
-对外不可逆、跨模型真分歧才停(合 main 验证过即自动合,见 CANON [L])。**
+把任务派给长跑 codex worker、`/loop` 心跳巡检防跑偏的极简协调器。没有看板文件、没有辅助
+脚本、没有评审面板:**herdr 就是看板**(workspace 列表 + 状态灯 + label),**协调器就是
+评审员**,一切判断由协调器每个 tick 现场做出。本 skill 运行期间对用户的一切叙述用中文。
 
-**输出语言(硬规则)**:本 skill 运行期间,协调器对用户(主 session)的一切 narration、每-tick 摘要、
-决策说明、追问**一律用中文**;仅技术术语 / 标识符 / 命令 / 代码 / 文件路径保留英文原文。即使在读英文源码、
-英文文档(如 `references/goal-cookbook.md`、`workflows/review-panel.js`)、working set 大量英文时,也**不得
-漂移成英文叙述**。
+## 铁律
 
-> 本 skill 是通用件,不写死任何具体项目的路径或契约。每个项目的运行态(看板 / 决策队列 /
-> worktree / 日志)落在目标项目里,不进 skill 仓。
+- **协调器不亲手改代码**:改码一律派给 codex worker;协调器只读、只驭、只合并。
+- **每个 worker 独立分支 + worktree**,全程不碰 main;协调器验证通过后合并**本地** main;
+  **推送远端永远由人类执行**。
+- **/goal 任务必带 BUDGET(硬上限)与 BLOCKED_STOP(无路可走即停下报告)**——防跑飞的
+  全部机制就这两行字。
+- **用户自己的 workspace 永不触碰**:协调器只操作自己创建的 `cfx` 前缀 workspace(新建的
+  天然排在用户的后面)。
 
-## 何时用 / 何时不用(与 ultracode 官方 Workflow 的分工)
+## herdr 操作手册
 
-建议开局同时挂上 **ultracode + curryflows**,按任务**动态切**:
+herdr 是有 agent 状态感知的终端复用器,CLI 即完整控制面(`herdr <子命令> --help` 可查)。
 
-- **确定性 / 有界任务** —— 实现一批改动、评审一个 diff、做一次研究、内层并行扇出 + 对抗验证、
-  judge panel、对单个产物拉 codex 第二意见 —— **走 ultracode 的官方 Workflow 工具,不要用
-  curryflows**。这类有界多-agent 工作 Workflow 工具原生更省事(本仓自身的批量改动就是纯 Workflow
-  工具做的)。
-- **非确定 / 长跑 / 跨会话 / 要把人类 review 从关键路径解耦** —— **走 curryflows**。
+**起线程**(一条命令 = 分支 + worktree + 带名 workspace):
 
-**curryflows 不重造循环引擎**:外层 `/loop` 定时心跳(session 级 cron,跨天调度、非阻断推进)
-本身是 Claude Code 内置原语,任何会话都能直接用。curryflows 的**不可替代
-价值**收窄为该心跳之上、官方 Workflow 工具做不到的这一层:
+```bash
+herdr worktree create --cwd <项目> --branch cfx/<任务名> --label "cfx <任务名>" --no-focus --json
+# worktree 默认落 ~/.herdr/worktrees/<仓名>/<分支名>;返回 JSON 含 workspace_id 与 worktree 路径
+herdr agent start cfx-<任务名> --cwd <worktree路径> --workspace <wid> --no-focus -- \
+  codex --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort=max
+# 返回 JSON 含 pane_id;YOLO mode 下无信任目录菜单,直接就绪
+herdr wait agent-status <pane_id> --status idle --timeout 90000    # 等 TUI 就绪
+```
 
-1. **tmux 里跨会话存活的自驱 codex /goal 群**:SSH 断连不丢、可重连;Esc 急停可驭 live worker;
-   budget + blocked-stop 强契约挂在真·长跑 worker 上。
-2. **防 runaway**:`discover-threads.py` 跨会话对账,杜绝"一个 codex /goal 跑 1.9 亿 token、3.7 天
-   无人察觉"。
-3. **durable 跨会话真相源 + 异步人类决策面**:`board.py` 看板 / `decisions.jsonl` 队列 / 只读终端
-   看板(board-tui),人类跨天异步裁决(在主 session 对 tick 摘要直接回复)、默认不阻断推进。
-4. **worker 生命周期状态机 + 终态一并回收 + 已封契约 fail-closed 门**。
+**注入任务**:
 
-判据:**凡能在一次有界 episode 内跑完的 → ultracode;只有"要在 tmux 里长跑、跨会话、防跑飞、人类
-异步裁决"的 → curryflows。** curryflows 自己 tick 内的有界扇出(reviewer 面板)即由
-`workflows/review-panel.js` 这个官方 Workflow 承载执行,协调器每 tick 调 Workflow 工具跑它。
+```bash
+herdr pane read <pane_id> --lines 8   # 先看输入框有无残留:Esc 打断会把旧消息还原回
+                                      # composer,直接 send 会把新旧文本拼接成一条
+herdr agent send cfx-<任务名> "<提示词>"    # 中文 / 多行 / 引号安全落地,可 pane read 读回核验
+herdr pane send-keys <pane_id> enter
+herdr wait agent-status <pane_id> --status working --timeout 15000  # 确认提交生效
+```
 
-## 上下文纪律:持久上下文 + 受控压缩 + tick 内不灌大读(CANON [Q])
+**巡检 / 细看**:
 
-协调器上下文是**可消耗资源,不是记忆**:session 级 cron 按节拍把 tick prompt 注入,上下文跨
-tick 持续存在,由 auto-compact 有界(建议 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`;压缩把全部
-历史换成一段几千 token 的有损摘要,丢什么不可控)。因此跨 tick 状态**只**信 durable 看板:上下
-文里的历史仅供参考,每 tick 必须重新读回看板对账,记忆与看板不一致一律以看板为准(CANON [Q],
-见 `references/coordinator.md`;看板见 `references/board.md`)。tick 内的巨读仍必须隔离:几百 MB
-的 codex transcript / 大 diff 只进 review-panel Workflow / subagent 的上下文,随其消亡,协调器
-只收蒸馏裁决;协调器内联跑构建/测试一律输出重定向到文件、只读 exit code、失败才 tail。
+```bash
+herdr agent list                      # 一条命令看全部线程:working / idle / blocked / done
+herdr pane read <pane_id> --source recent-unwrapped --lines 50     # 有界读某线程近况
+```
 
-## 三层控制流
+**驭 / 软停**:
 
-1. **协调器(cron 心跳 + 持久上下文)= 外层调度**:薄,做推理、决策、内联机械操作、写
-   看板。`/loop <间隔>` 的 session 级 cron 把 tick prompt 按节拍注入;上下文持久、可被
-   auto-compact 有损重写,故每 tick 以看板读回对账开始(CANON [Q])。协调器在 main 树上
-   **只写文档**(计划 / 契约 / 说明 / 覆盖矩阵),**绝不自己写 + 调代码**(源码 / 测试 / 脚本含
-   Workflow `.js`)——改码一律走 worker(worktree)/ fixer subagent / 动态 Workflow,小任务也照此
-   (**CANON [J]**,见 `references/architecture.md`)。
-2. **内层有界动作**:每个 tick 先调官方 Workflow 工具跑 **`workflows/review-panel.js`**(review 面板,
-   只读)审产物 + 对账资源;协调器据裁决决策后**内联执行**机械操作——起/驭/commit/合 main/回收
-   (规程见 `references/operator-spec.md`);唯一仍外派的执行体是改码的 **fixer subagent**。
-3. **codex `/goal` = 自驱 worker**:真正干活的长跑线程,在 detached tmux 里跑,由强目标契约
-   (budget + blocked-stop)+ 只读审计 + Esc 急停兜住(见 `references/goal-contract.md`)。
+```bash
+herdr pane send-keys <pane_id> escape   # 软停:codex 进程存活、上下文完整,只停在途 turn
+# 纠偏 = 软停后照「注入任务」再发一条;终态可能报 idle 也可能报 done,等待时两个都要认
+```
 
-职责分离:tick **内部**是开放式 agent 推理(审、裁、调度不可脚本化);tick 的**触发**是
-确定性机械件(session cron),不靠模型自觉(CANON [Q])。
+**标状态 / 找人**:
 
-## tick:自检 → 读回 → 审核 → 决策 → 操作 → 补货 → 落盘
+```bash
+herdr workspace rename <wid> "cfx <任务名> · ❓等你"    # label 就是看板,状态变了就改名
+herdr notification show "需要你裁决" --body "<一句话>" --sound request
+```
 
-每个 tick 按此顺序执行(完整 runbook + tick prompt 模板见 `references/coordinator.md`):
+**回收**(线程合并或放弃后):
 
-0. **自检与短路**:pause 文件在 → 回 "paused" 即停;心跳/活性自检;看板零变化 → no-op 直达第 6 步。
-1. **读回(全部有界)**:`list-threads --open` / `list-decisions --open` / `list-backlog` /
-   `list-ticks --last K` + 北极星文档——上下文历史仅供参考(可能已被压缩改写),读回对账才是记忆。
-2. **审核(协调器调官方 Workflow 工具跑 `workflows/review-panel.js`,只读)**:Workflow 内部逐线程
-   pipeline——stage1 并发多 lens(correctness/bounds/invariant/repro,各自隔离上下文)+ 每 lens 跑
-   `scripts/discover-threads.py` 资源对账 + 跨模型硬规则(worker 非 codex 时追加 `codex-review.sh`
-   腿),stage2 arbiter 对照契约收敛(**不投票**、裁不动则 escalate);返回 `{reviews, escalations}`。
-   巨型 transcript 隔离在各 lens agent 内,绝不进协调器。
-3. **决策(协调器,薄)**:消费收敛裁决;一致且依据可判就自动处理,真分歧裁不动 → 升人类决策项
-   (该线程 Esc 软停真等人,CANON [N])。同时落地人类已回复的决策项。
-4. **操作(协调器内联,逐线程,绝不成波)**:detach 起新 /goal、`inject-steer.sh` 注入、
-   `interrupt-target.sh` 软停、commit、串行合 main、终态回收(`scripts/reap.sh`);合并冲突 /
-   验证回归走 worker-first 修复链(驭回活 worker → fixer subagent),协调器绝不亲手改码。
-5. **补货与探索(常设,CANON [M])**:数双水位 + 对照北极星;欠账即派 scoping subagent 生成候选,
-   过两道 seal 门写进 `backlog.jsonl`(dedup + 拒绝记忆)。
-6. **落盘 + 回摘要**:写回看板、record-tick、回一条清晰摘要(schema 见下),结束本 turn。
-   本 tick 若有操作失误,修复必须落 durable 层(改脚本 / 改 tick prompt / 契约),只写进
-   ticks.jsonl 会随读回窗口滚出而复发。
+```bash
+herdr worktree remove --workspace <wid>    # 收 worktree + 关 workspace
+git -C <项目> branch -D cfx/<任务名>        # 分支要自己删
+```
 
-## 每 tick 的摘要:清晰、不糊弄
+已实测的坑:`wait agent-status` 只认 pane_id、不认 agent 名;完成态在 `idle` / `done` 间
+漂移;状态检测不认识的菜单会回落 `idle`,所以"idle 很久"值得 pane read 看一眼。
 
-回主 session 的摘要必须紧凑,但**禁止绿洗**。缺以下任一项不算合格摘要:
+## /goal 是什么
 
-- 每条在跑线程:状态 / 本 tick 实质进展 / 预算余额;
-- 审核裁决:**含异议**(哪个 reviewer 报了什么、是否有跨模型分歧),不许只报"通过";
-- **未验证项 / 风险 / 越界**:强制如实暴露;
-- **每个 open 决策项完整列出**(id、问题、options、recommendation、evidence 路径;每 tick 重列
-  直到关闭,超 24h 置顶催办)——主 session 就是决策面,人对摘要直接回复即裁决;
-- 本 tick 回收了哪些资源。
+codex 的持久化目标机制:消息以 `/goal` 开头,就把一份完成契约钉进线程——**OUTCOME**(完成
+时什么应为真)、**VERIFICATION**(拿什么证据验证)、**BUDGET / BLOCKED_STOP**(何时必须停)。
+codex 会跨回合对着它自驱推进、拿证据自查完成度,适合大任务与探索类、优化类工作(profiling、
+复现、迁移、benchmark 调优、研究审计)。小任务直接注入普通提示词即可;大任务在提示词开头加
+`/goal`。不落契约文件——/goal 文本本身就是契约,worktree 里的 diff 就是产物。
 
-完整裁决 / transcript 落 durable 看板,摘要只给指针(路径);决策项是例外——列的是决策项内容
-本身,但 evidence 仍只给路径、不贴文件正文。详见 `references/board.md`。
+## tick:全靠协调器现场判断
 
-## 跨模型 review(本 skill 的招牌)
+`/loop <间隔>` 挂心跳(5-10 分钟量级)。每个 tick 看什么、读多少、要不要 diff、要不要驭、
+要不要合,**不设固定清单,协调器自主决定**。仅有的取向:
 
-worker 是 codex、reviewer 是 Claude opus,produce 与 review 天然跨模型;每 tick 由
-`workflows/review-panel.js` 这个官方 Workflow 扇出**多个**reviewer(不同 lens,各自独立),分歧即
-信号:一致且依据可判 → 自动处理;真分歧 → 对照 ground truth(契约 / 权威文档 / GOLD oracle /
-复现)裁,**不投票**;裁不动 → 升人类。需要 codex 第二意见时,该 Workflow 调 `scripts/codex-review.sh`
-拉一份 codex 侧审核(默认 worker=codex 时为可选,非每 tick 必跑)。
-**硬规则:跨模型 review 仅当 `worker.model != reviewer.model` 才成立。** 默认 worker=codex /goal、
-reviewer=Claude opus → 天生跨模型;但若某线程的 worker 是 Claude subagent(非 codex),则至少一个
-reviewer 必须是 codex 腿(`scripts/codex-review.sh`)——此时 codex-review.sh 是**必需**、不是可选,
-否则审核退化为单模型、跨模型保证作废。协调器必须保证 reviewer 模型集合里存在与 worker 不同的模型。
-reviewer 的反捏造 / 独立复验职责见 `references/reviewer-spec.md`。
+- 发现跑偏 → 驭(注入纠偏 / Esc 软停);
+- worker 干完 → 协调器自审:有界读 diff、跑验证(输出重定向到文件、只读 exit code),
+  绿了就 rebase + 合本地 main → 回收线程;
+- 自己裁不动 / 对外不可逆 → rename 标记 + notification 通知,**其余线程照推**,等用户在
+  主 session 回复;
+- 摘要如实:进展、风险、待决,不绿洗。
 
-**把环境 / 独立性验证前移(两条硬规则)**:**seal 前 environment-precondition dry-run(CANON [O])**——
-契约的 `preconditions`(baseline 绿 / venv 可装 / 预期 drift)在 seal 前由 seal-gate 用
-`scripts/precondition-dryrun.sh` 在 throwaway worktree 上真跑,不成立即不封,挡在 worker STEP-0 之前;
-**独立复验锁 L3(CANON [P])**——`committed→verified` 必须抹 venv + 删 `.so` + clean rebuild + 亲自跑,
-reviewer 声明实际达到的独立性档位,worker 自己 / 自 spawn 的 replay 不算独立。见 `references/reviewer-spec.md`、
-`task-contracts/task.md`。
+## 用法
 
-## 综合看板(终端 TUI)
-
-每个项目的运行态落在 `<project>/.curryflows/`:`board/threads.jsonl`(线程台账)、
-`board/decisions.jsonl`(人类决策队列)、`board/ticks.jsonl`(每 tick 完整裁决,durable 历史)、
-`board/backlog.jsonl`(任务补给队列,CANON [M]),以及 `contracts/<thread-id>.md`(已封的每线程
-契约,`task-contracts/task.md` 填好的副本;threads.jsonl 的 `contract` 字段指向它)。**看板 jsonl
-的唯一写入者是 `scripts/board.py`**(原子重写 + 枚举/必填 fail-closed 校验);绝不手编
-`threads.jsonl` / `decisions.jsonl`——手编易写坏行,而读回严格 fail-closed,一行坏整个读回失败。
-
-人类表面是终端原生两层(CANON [R],权威定义见 `references/board.md`「终端表面」),jsonl 真相源
-不变:**T0** = `board.py summary` 一行摘要,用户自己 `watch -n 15` 挂在小 pane(或 tmux
-status-right)常显;**T1** = `scripts/board-tui.py` 全屏 curses 看板——**独立只读查看器,零写
-路径**:`ln -sf <skillDir>/scripts/board-tui.py ~/.local/bin/cfx-board` 一次性建符号链接后,任意
-终端 `cfx-board` 即看(无参自动发现:cwd 上溯找板 → 全局注册表挑选;写操作会把看板自动登记进
-`~/.cache/curryflows/boards.jsonl`),四视图(Threads/Decisions/Backlog/Ticks)。**决策不在 TUI
-里做**:协调器每 tick 摘要完整列出全部 open 决策项,人在主 session 直接回复,协调器执行
-`board.py resolve-decision` 落盘;pause 由人 `touch` / `rm <project>/.curryflows/pause`(TUI 只
-显示 PAUSED)。TUI 绝不执行生命周期操作,关闭不影响推进。启动命令与按键表见
-`references/board.md`「终端表面」。
-
-worker 生命周期(状态机 `ready → running → idle → reviewed → committed → verified →
-merged | rolled-back`,任意状态可入 `blocked-human`;`session-reaped` 保留枚举、常规流不再经过)、
-终态一并回收(CANON [B] 修订)与 relaunch/扩展见 `references/coordinator.md` `## worker 生命周期`。
-
-## 资源管理:用完即回收
-
-协调器每 tick 把已到终态(`merged` / `rolled-back`)线程的 tmux 会话、worktree、分支**一并回收**
-——这是硬职责,不指望收尾钩子(CANON [B] 修订:`verified` 保留会话,合并冲突才有活 worker 可驭回)。
-`discover-threads.py` 双向对账(真实 tmux 会话 / worktree vs 看板)给出可回收集,协调器执行
-`scripts/reap.sh`。详见 `references/operator-spec.md`。
-
-## 并发隔离
-
-每个长跑 worker = 独立分支 + worktree(默认 `~/.cache/curryflows/worktrees/<project>/<thread-id>`,
-base 可配)。worker 在自己的分支/worktree 上 speculative 推进,全程不碰 main。合 main **自动化(CANON [L])**:
-`verified` 后串行 rebase 最新 main + 重跑验证,**绿则自动合**;**冲突 / 验证回归走 worker-first 修复链**
-(驭回该线程活着的 worker → fixer subagent,worktree 内修到绿,协调器绝不亲手改码),不升人类,
-唯真·跨模型分歧走 model-divergence。孤儿 worktree 并入资源发现对账 + 回收。
-
-**调度纪律(CANON [M]):流水线推进,绝不整波同步**。契约 scoping/seal 与在途执行重叠——双水位:
-in-flight 低于并发水位(=并发上限,默认 4)就补 launch,sealed-ready 池低于水位就并行备下一批契约,
-绝不等上一波收官再 scoping;无真依赖切片 base **启动时的 main**、不等在途线程 merged(漂移由
-CANON [L] rebase+重验兜底),真依赖可 base 依赖线程的 committed 分支提前起;线程一到 idle 就单独
-走完 commit→verify→merge,"wave" 只是报告用语、不是调度单元。权威定义见
-`references/coordinator.md`「调度纪律」。
-
-## 人类决策(barrier,异步、非阻断)
-
-默认不阻塞:疑问 → 就地跨模型 review → 一致且依据可判就自动处理。只有**两类**硬闸入队:
-**对外不可逆**、**跨模型真分歧**(合 main 已自动化,见 CANON [L];另有 **seal-contract** 在开头封定 worker 的目标契约)。人类异步处理的路径 =
-在主 session 对 tick 摘要直接回复(摘要完整列出每个 open 项;board-tui 仅只读查看)。**"前进不等人"= 不弹窗打断你、其余无依赖线程不陪停;
-但触发决策的那条线程真停等你**(`blocked-human` + Esc 软停,沉默不是同意,CANON [N])——异步不等于放行。
-详见 `references/decision-surface.md`。
-
-**启动是 fail-open(CANON [I])**:当 curryflows 主动就"要不要起协调器 / 要不要把可执行长跑活交给
-worker"问人类、而人类**未回答**时,默认动作是**起 `/loop`** 推进可执行的活、把未回答的问题挂到
-`decisions.jsonl` 异步裁——**绝不静默退回 inline、也不停下干等**。启动决策不是 barrier;上面两类硬闸
-+ seal-contract 仍各自只挡其不可逆动作 / 未封契约的那条线程,不挡 loop 跑别的就绪线程。
-`/curryflows <自由任务>`(非字面 `start`)即视为启动意图。详见 `references/decision-surface.md`。
-
-**协调器绝不阻塞询问(CANON [K])**:/loop 全程**零 `AskUserQuestion`**。无依赖 / 无需真决策的下一波
-(选下一片 / 下一批、推进节奏、并行编排)**直接推进,不问不停**;需人判的(对外不可逆、跨模型真分歧、
-外部阻塞、需人定的 ABI / 编码;**合 main 已自动化,见 CANON [L]**)一律 `board.py post-decision` 进
-`decisions.jsonl` + 摘要完整列出该项,**只 hold 该线程、其余照推**;混合波推进可推进部分、只入队需决策部分。
-
-**决策项真停其线程(CANON [N])**:入队一个决策项 = 那条线程**真停等人**——置 `blocked-human` + 协调器
-对其 codex 注入 Esc 软停(`interrupt-target.sh`,进程存活、goal 上下文完整,**绝不 reap**);**沉默 = 继续
-等,不是同意**——严禁"知悉未异议 / 采纳推荐默认 / 异步 veto 先执行后否决 / 协调器对 barrier 自裁"自行放行;
-人类明确 resolve 后,协调器用 `inject-steer.sh` 把裁决注入同一 pane 续跑(零重启)。[K] 管"不弹窗",[N]
-管"入队后那条线程真停",[M] 保证其余线程有活可推——三者互补。人类登录看决策面异步裁。
-
-## 自驱 codex 的监督
-
-协调器取代了独立的 overseer 会话:廉价信号(`discover-threads.py` + budget)在审核阶段由 reviewer
-顺手出;深度审计由只读 opus reviewer 读 transcript/diff(隔离巨型 transcript,绝不进协调器);坏裁决
-→ 协调器决策 → 跑 `interrupt-target.sh` 软停 + post 决策项。codex 全走 tmux,唯一驱动器是
-`inject-steer.sh` / `interrupt-target.sh`:**对 live codex TUI 绝不手搓 raw send-keys**(在普通 shell
-pane 上用 send-keys 启动 codex 二进制是允许的,见 `references/codex-integration.md`)。对目标 codex 的
-写只有两类:Escape(软停)和人类裁决后注入的指令,其余全只读。
-
-**codex 启动纪律(CANON [H],fail-closed,与 /loop 是否在跑解耦)**:curryflows 里**任何** codex 调用
-只能经 tmux 启动 + 由 subagent 监控到完成——有界 review 腿由**一个 subagent** 启动(`codex-review.sh`)
-并实时监控交付文件到稳定,自驱 worker 由协调器 detach 起、每 tick reviewer 审。**禁用** codex 插件
-命令(`codex:rescue` / `codex:review` / `codex:adversarial-review`)、`codex exec`、companion / 远端 CLI
-代理——它们断连 / 网关 502 即整段丢、零产物(已观测)。即使在尚未起协调器的 inline 场景也照此办理。
-起 codex **一律最高思考强度**:启动命令显式带 `-c model_reasoning_effort=xhigh`(当前 CLI 最高档),
-不依赖宿主全局配置。详见 `references/codex-integration.md`。
-
-## 操作
-
-- `start` — 在当前项目起协调器:宿主 tmux 会话 + 实例化 `./.curryflows/tick-prompt.md` + 挂
-  `/loop <间隔>` 心跳(payload 含 "ultracode",见 `references/coordinator.md`「start」),并把
-  T0/T1 两条看板启动命令(`watch … board.py summary` 常显行 + `cfx-board` symlink 建议:
-  `ln -sf <skillDir>/scripts/board-tui.py ~/.local/bin/cfx-board` 后任意终端 `cfx-board` 即看)
-  **打印给用户**——它们是用户自己的终端 / pane,协调器不代拉(CANON [R],命令原文见
-  `references/board.md`「终端表面」)。
-- `status` — 跑 `scripts/discover-threads.py --project . --board ./.curryflows/board/threads.jsonl`,
-  列所有在途资源 + 未对账的 runaway。
-- `board` — 看板 jsonl 的所有写入走 `scripts/board.py`(唯一写入者,原子 + fail-closed,见上;
-  每个成功的写子命令会把看板 best-effort 登记进全局注册表 `~/.cache/curryflows/boards.jsonl`,
-  `board.py boards` 只读列出);该动作 = 跑 `scripts/board.py summary --board ./.curryflows/board`
-  把当前一行状态回给用户,并把 T0(watch summary)/ T1(`cfx-board` 只读查看器)两条启动命令
-  打印给用户(见 `references/board.md`「终端表面」)。
-- `oversee <codex-session-id> <pane>` — 把一个已在跑的 codex /goal(在 curryflows 之外启动的)
-  注册到看板,纳入协调器每-tick 的 reviewer 审核 + Esc 急停;不是独立 overseer 会话。
-
-## 文档索引(references)
-
-- `architecture.md` — 三层模型、审核优先 tick、跨模型 review、barrier、subagent 边界。
-- `coordinator.md` — coordinator tick runbook(CANON [Q] 持久上下文 + 受控压缩)+ tick prompt 模板。
-- `reviewer-spec.md` — reviewer / arbiter 契约(由官方 Workflow `workflows/review-panel.js` 执行):读什么、裁决 schema、反捏造 + 独立复验、清晰摘要要求。
-- `operator-spec.md` — 操作规程(协调器内联执行):起/驭/commit/合 main/回收、fixer subagent 契约、回传字段。
-- `board.md` — 综合看板格式(threads/decisions/ticks/backlog)+ 终端表面(CANON [R])+ 每 tick 摘要 schema。
-- `codex-integration.md` — codex 全走 tmux + inject/interrupt + 文件交付 + discover-threads。
-- `goal-contract.md` — /goal 强契约(budget + blocked-stop)。
-- `decision-surface.md` — 决策项格式 + barrier / 疑问驱动。
-- `goal-cookbook.md` — codex /goal 参考。
-
-## Workflow 脚本(非 references)
-
-- `workflows/review-panel.js` — 随仓附带的官方 Workflow 参考脚本:协调器每 tick 调官方 Workflow 工具
-  跑它(逐线程 pipeline:stage1 并发多 lens + 资源对账 + 跨模型硬规则,stage2 arbiter 收敛/escalate),
-  返回 `{reviews, escalations}`。前提:协调器会话须已开 ultracode / 已 opt-in 官方 Workflow。
-  **args 用单一事实源生成、不要手拼**:`python3 scripts/board.py panel-args --board <board>
-  --threads id1,id2` 直接从 threads.jsonl 产出完整 args JSON(threads[] 必须是完整对象数组,
-  裸 id 字符串会被脚本 fail-fast 拒绝、不 spawn 任何 agent——事故 wf_3a62dfb1 曾烧 206K tokens
-  审字面量 undefined)。`args` 传真 JSON 对象(勿 `JSON.stringify` 成字符串);脚本对字符串 args
-  有容错(自动 `JSON.parse`),但仍优先传真对象。返回 `error: input-error` 就用 panel-args 重新
-  生成,绝不 inline 手搓替代 review 脚本(CANON [J])。
-
-## 依赖与边界
-
-硬依赖见 frontmatter `requires`。本 skill 不依赖任何具体项目运行时。外部资料、外部 skills 或
-示例实现只作参考,不覆盖本地约定。
+```text
+/curryflows <要干的活>     # 起 /loop、开线程、开始推进
+/curryflows status         # herdr agent list + 各线程一句话近况
+```
