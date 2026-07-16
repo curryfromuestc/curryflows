@@ -51,15 +51,25 @@ herdr pane close <线程wid>:p1     # 关掉 worktree create 自带的空 shell 
 herdr wait agent-status <pane_id> --status idle --timeout 90000    # 等 TUI 就绪
 ```
 
-**注入任务**:
+**注入任务(提示词一律落文件,composer 只进短指令)**:
+
+长提示词(/goal 契约、任务书、裁决说明)**先写成 md 文件**(如 `<worktree>/GOAL.md`,并叮嘱
+worker 不要把它 commit 进产物),composer 里只注入一行"读文件"短指令。整段长文直贴 composer
+已观测四种翻车:首个 enter 被吞、文本被截断(丢的恰是 BUDGET/BLOCKED_STOP 护栏段)、CJK 慢
+摄取留残留草稿(ctrl+u 清不掉,只能批量退格)、长输入被拆成两半提交。
 
 ```bash
 herdr pane read <pane_id> --lines 8   # 先看输入框有无残留:Esc 打断会把旧消息还原回
                                       # composer,直接 send 会把新旧文本拼接成一条
-herdr agent send cfx-<任务名> "<提示词>"    # 中文 / 多行 / 引号安全落地,可 pane read 读回核验
+herdr agent send cfx-<任务名> "/goal 完整契约见本目录 GOAL.md:先通读它,再严格按其执行"
 herdr pane send-keys <pane_id> enter
-herdr wait agent-status <pane_id> --status working --timeout 15000  # 确认提交生效
+herdr wait agent-status <pane_id> --status working --timeout 15000
+# 未转 working = enter 被吞(慢注入老坑),补一次 enter 再等
 ```
+
+给在途 codex 追加指令 / 唤醒被后端瞬断卡住的 goal:发**普通消息**(短的直接 send,长的照旧
+落 md 文件让它读),**绝不带 `/goal` 前缀**——那会弹 "Replace goal?" 菜单把原契约顶掉
+(已观测,esc 可退出保留原目标)。
 
 **巡检 / 细看**:
 
